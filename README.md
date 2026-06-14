@@ -58,7 +58,9 @@ For a request to `/<domain>` the Worker:
    served. **SVG is refused** to avoid script injection. A byte cap and per-request
    timeout are enforced.
 4. **Caches** at the edge (Cloudflare Cache API) and returns the bytes with
-   `Cache-Control`. On any failure it serves a bundled transparent fallback PNG.
+   `Cache-Control`. When no icon can be found (or the host is rejected) it returns
+   a cacheable **404** so each client renders its own built-in placeholder, rather
+   than serving a foreign or blank image.
 
 ## Deploy
 

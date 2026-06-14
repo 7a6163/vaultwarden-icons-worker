@@ -7,7 +7,6 @@
  * sees Cloudflare's IP, never the Vaultwarden server or the end client.
  */
 
-import { FALLBACK_CONTENT_TYPE, FALLBACK_ICON } from "./fallback";
 import { getIcon, type IconFetchOptions } from "./favicon";
 import { isPublicHostname, parseDomain } from "./ssrf";
 
@@ -68,13 +67,17 @@ function imageResponse(
 	});
 }
 
-function fallbackResponse(negativeTtl: number): Response {
-	return imageResponse(
-		FALLBACK_ICON,
-		FALLBACK_CONTENT_TYPE,
-		negativeTtl,
-		"fallback",
-	);
+function notFoundResponse(negativeTtl: number): Response {
+	// No icon available: respond 404 (cacheable) so each client renders its own
+	// built-in placeholder, instead of a foreign or blank image.
+	return new Response(null, {
+		status: 404,
+		headers: {
+			"cache-control": `public, max-age=${negativeTtl}`,
+			"access-control-allow-origin": "*",
+			"x-icon-result": "none",
+		},
+	});
 }
 
 async function handleIcon(
@@ -92,12 +95,12 @@ async function handleIcon(
 	const domain = parseDomain(pathname);
 	if (!domain || !isPublicHostname(domain.host, config.blockedSuffixes)) {
 		// Don't cache rejections of arbitrary input at the edge.
-		return fallbackResponse(config.negativeTtl);
+		return notFoundResponse(config.negativeTtl);
 	}
 
 	const icon = await getIcon(domain, config);
 	if (!icon) {
-		const miss = fallbackResponse(config.negativeTtl);
+		const miss = notFoundResponse(config.negativeTtl);
 		ctx.waitUntil(cache.put(cacheKey, miss.clone()));
 		return miss;
 	}
@@ -135,9 +138,9 @@ export default {
 			});
 		}
 
-		// Browsers auto-request the Worker's own favicon; answer with the fallback.
+		// Browsers auto-request the Worker's own favicon; we have none, so 404.
 		if (url.pathname === "/favicon.ico") {
-			return fallbackResponse(config.negativeTtl);
+			return notFoundResponse(config.negativeTtl);
 		}
 
 		try {
@@ -154,8 +157,8 @@ export default {
 			}
 			return response;
 		} catch {
-			// An icon service must always return an image — never surface a 500.
-			return fallbackResponse(config.negativeTtl);
+			// Never surface a 500 — a 404 lets the client show its own placeholder.
+			return notFoundResponse(config.negativeTtl);
 		}
 	},
 } satisfies ExportedHandler<Env>;
