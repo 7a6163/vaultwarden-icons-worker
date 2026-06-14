@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "vaultwarden-icons-worker",
+  "name": "vaultwarden-icons",
   "main": "src/index.ts",
   "compatibility_date": "2025-10-11",
   "observability": {
