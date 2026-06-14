@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "vaultwarden-icons-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-11",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    // Comma-separated extra hostname suffixes to treat as blocked (optional).
+    "BLOCKED_SUFFIXES": "",
+    // Max favicon size served, in bytes. Larger responses are rejected.
+    "MAX_ICON_BYTES": "524288",
+    // Outbound fetch timeout per upstream request, in milliseconds.
+    "FETCH_TIMEOUT_MS": "5000",
+    // Edge cache TTL for resolved icons, in seconds.
+    "CACHE_TTL_SECONDS": "604800"
+  }
+  // Production: bind a custom domain via a route, e.g.
+  // "routes": [{ "pattern": "vaultwarden-icons.example.com", "custom_domain": true }]
+}

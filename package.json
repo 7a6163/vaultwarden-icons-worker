@@ -1,0 +1,23 @@
+{
+  "name": "vaultwarden-icons",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that resolves and serves website favicons for Vaultwarden, hiding the server's egress IP from target sites.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
+    "@cloudflare/vitest-pool-workers": "^0.9.13",
+    "@cloudflare/workers-types": "^4.20260613.1",
+    "typescript": "^5.9.2",
+    "vitest": "~3.2.0",
+    "wrangler": "^4.42.0"
+  }
+}
