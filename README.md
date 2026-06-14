@@ -4,12 +4,6 @@ A small Cloudflare Worker that resolves and serves website favicons for
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden), so that **your
 Vaultwarden server's IP is never exposed** to the sites your users have saved.
 
-> **TL;DR（中文）**：把 Vaultwarden 的 icon 抓取搬到 Cloudflare Worker。設定
-> `ICON_SERVICE=https://<worker>/{}` 後,Vaultwarden 只回一個 redirect、**伺服器完全不抓圖**;
-> 由 Worker 自己解析並抓取 favicon,目標網站只看得到 **Cloudflare 的 IP**,
-> 伺服器與用戶端 IP 都不外洩,而且**沒有任何第三方**(不像 DuckDuckGo/Google icon service)
-> 知道你的用戶在查哪些網域。
-
 ## Why
 
 Vaultwarden's default icon service (`ICON_SERVICE=internal`) downloads each
@@ -107,6 +101,7 @@ Set in `wrangler.jsonc` under `vars` (all are strings):
 npm run dev        # local Worker at http://localhost:8787  (try /github.com)
 npm test           # vitest (unit + integration via @cloudflare/vitest-pool-workers)
 npm run typecheck  # tsc --noEmit
+npm run lint       # biome lint
 ```
 
 ### Testing notes
@@ -138,4 +133,4 @@ npm run typecheck  # tsc --noEmit
 
 ## License
 
-MIT
+Released under the [MIT License](LICENSE).
