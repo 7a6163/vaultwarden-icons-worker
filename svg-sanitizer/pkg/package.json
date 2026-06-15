@@ -1,0 +1,15 @@
+{
+  "name": "svg-sanitizer",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "svg_sanitizer_bg.wasm",
+    "svg_sanitizer.js",
+    "svg_sanitizer.d.ts"
+  ],
+  "main": "svg_sanitizer.js",
+  "types": "svg_sanitizer.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

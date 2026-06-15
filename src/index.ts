@@ -55,16 +55,20 @@ function imageResponse(
 	maxAge: number,
 	status: "hit" | "miss" | "fallback",
 ): Response {
-	return new Response(body, {
-		status: 200,
-		headers: {
-			"content-type": contentType,
-			"cache-control": `public, max-age=${maxAge}`,
-			"x-content-type-options": "nosniff",
-			"access-control-allow-origin": "*",
-			"x-icon-result": status,
-		},
-	});
+	const headers: Record<string, string> = {
+		"content-type": contentType,
+		"cache-control": `public, max-age=${maxAge}`,
+		"x-content-type-options": "nosniff",
+		"access-control-allow-origin": "*",
+		"x-icon-result": status,
+	};
+	if (contentType === "image/svg+xml") {
+		// Defense in depth on top of svg-hush: block any script execution or
+		// external loads even if the SVG is opened as a top-level document.
+		headers["content-security-policy"] =
+			"default-src 'none'; style-src 'unsafe-inline'; sandbox";
+	}
+	return new Response(body, { status: 200, headers });
 }
 
 function notFoundResponse(negativeTtl: number): Response {

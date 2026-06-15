@@ -73,7 +73,10 @@ describe("getIcon", () => {
 		expect(icon?.contentType).toBe("image/x-icon");
 	});
 
-	test("skips SVG icons and falls through to favicon.ico", async () => {
+	test("sanitizes and serves an SVG icon (strips scripts)", async () => {
+		const dirty =
+			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16">' +
+			'<script>alert(1)</script><rect width="16" height="16" fill="red"/></svg>';
 		fetchMock
 			.get("https://example.com")
 			.intercept({ path: "/" })
@@ -83,14 +86,13 @@ describe("getIcon", () => {
 		fetchMock
 			.get("https://example.com")
 			.intercept({ path: "/fav.svg" })
-			.reply(200, "<svg/>", { headers: { "content-type": "image/svg+xml" } });
-		fetchMock
-			.get("https://example.com")
-			.intercept({ path: "/favicon.ico" })
-			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+			.reply(200, dirty, { headers: { "content-type": "image/svg+xml" } });
 
 		const icon = await getIcon(DOMAIN, OPTS);
-		expect(icon?.contentType).toBe("image/x-icon");
+		if (!icon) throw new Error("expected an icon");
+		expect(icon.contentType).toBe("image/svg+xml");
+		const text = new TextDecoder().decode(icon.body);
+		expect(text).not.toContain("<script");
 	});
 
 	test("never fetches an icon href that resolves to a private host", async () => {

@@ -1,0 +1,19 @@
+[package]
+name = "svg-sanitizer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+# svg-hush is the same SVG sanitizer Vaultwarden uses in its internal icon path.
+# If this version fails to resolve, run `cargo add svg-hush` to pin the latest.
+svg-hush = "0.9"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
