@@ -15,6 +15,27 @@ export interface Env {
 	readonly MAX_ICON_BYTES?: string;
 	readonly FETCH_TIMEOUT_MS?: string;
 	readonly CACHE_TTL_SECONDS?: string;
+	readonly FALLBACK_ICON_SERVICE?: string;
+}
+
+/** Presets for the optional third-party fallback (off by default). */
+const FALLBACK_PRESETS: Readonly<Record<string, string>> = {
+	duckduckgo: "https://icons.duckduckgo.com/ip3/{}.ico",
+	google: "https://www.google.com/s2/favicons?domain={}&sz=64",
+	bitwarden: "https://icons.bitwarden.net/{}/icon.png",
+};
+
+/** Resolve FALLBACK_ICON_SERVICE to a URL template, or null when disabled/invalid. */
+function resolveFallbackUrl(value: string | undefined): string | null {
+	const raw = (value ?? "").trim();
+	if (!raw) {
+		return null;
+	}
+	const preset = FALLBACK_PRESETS[raw.toLowerCase()];
+	if (preset) {
+		return preset;
+	}
+	return raw.startsWith("https://") && raw.includes("{}") ? raw : null;
 }
 
 interface ResolvedConfig extends IconFetchOptions {
@@ -46,6 +67,7 @@ function resolveConfig(env: Env): ResolvedConfig {
 			.split(",")
 			.map((entry) => entry.trim())
 			.filter(Boolean),
+		fallbackUrl: resolveFallbackUrl(env.FALLBACK_ICON_SERVICE),
 	};
 }
 

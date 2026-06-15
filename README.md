@@ -36,7 +36,8 @@ All three parties — server, client, target — are shielded.
 
 - ✅ Hides the Vaultwarden **server** IP from target sites (server makes no icon request).
 - ✅ Hides the **client** IP from target sites (the Worker fetches, not the client).
-- ✅ No third-party icon service involved — the Worker does its own discovery.
+- ✅ No third-party icon service by default — the Worker does its own discovery
+  (an optional server-side fallback can be enabled via `FALLBACK_ICON_SERVICE`).
 - ❌ Not an `HTTPS_PROXY`/SOCKS forward proxy. A Cloudflare Worker cannot serve as
   `HTTPS_PROXY` for Vaultwarden's internal fetcher — that requires a real proxy
   (VPS/Tor/WARP). This project uses Vaultwarden's `ICON_SERVICE` redirect model instead.
@@ -98,6 +99,7 @@ Set in `wrangler.jsonc` under `vars` (all are strings):
 | `FETCH_TIMEOUT_MS` | `5000` | Per-request outbound timeout (ms). |
 | `CACHE_TTL_SECONDS` | `604800` | Edge cache TTL for resolved icons (7 days). |
 | `BLOCKED_SUFFIXES` | `""` | Comma-separated hostname suffixes to additionally refuse. |
+| `FALLBACK_ICON_SERVICE` | `""` | Off by default. When own discovery fails, fetch from a third party **server-side** (the client is never exposed): `duckduckgo`, `google`, `bitwarden`, or a custom `https://…/{}` URL. |
 
 ## Development
 

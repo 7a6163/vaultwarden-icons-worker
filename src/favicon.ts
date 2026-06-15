@@ -16,6 +16,11 @@ export interface IconFetchOptions {
 	readonly maxBytes: number;
 	/** Per-request outbound timeout. */
 	readonly timeoutMs: number;
+	/**
+	 * Optional third-party icon URL template (one `{}` placeholder for the host).
+	 * Fetched server-side only when own discovery fails. Null/undefined disables it.
+	 */
+	readonly fallbackUrl?: string | null;
 }
 
 export interface IconResult {
@@ -258,5 +263,19 @@ export async function getIcon(
 			return icon;
 		}
 	}
+
+	// Own discovery failed: optionally fall back to an operator-configured
+	// third-party icon service, fetched server-side (the client is never exposed).
+	if (options.fallbackUrl) {
+		const fallback = options.fallbackUrl.replace(
+			"{}",
+			encodeURIComponent(domain.host),
+		);
+		const icon = await fetchIcon(fallback, options);
+		if (icon) {
+			return icon;
+		}
+	}
+
 	return null;
 }
