@@ -172,4 +172,27 @@ describe("getIcon", () => {
 		const icon = await getIcon(DOMAIN, OPTS);
 		expect(icon).toBeNull();
 	});
+
+	test("uses the configured fallback service when own discovery fails", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(404, "no");
+		fetchMock
+			.get("https://icons.duckduckgo.com")
+			.intercept({ path: "/ip3/example.com.ico" })
+			.reply(200, "DDG", { headers: { "content-type": "image/x-icon" } });
+
+		const icon = await getIcon(DOMAIN, {
+			...OPTS,
+			fallbackUrl: "https://icons.duckduckgo.com/ip3/{}.ico",
+		});
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
 });
