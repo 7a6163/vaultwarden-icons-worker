@@ -54,9 +54,11 @@ For a request to `/<domain>` the Worker:
    to extract `<link rel="icon">` / `apple-touch-icon` hrefs, ordered by declared
    size, then falls back to `/favicon.ico`. Every discovered href is re-validated
    against the SSRF guard before it is fetched.
-3. **Validates the response** (`src/sanitize.ts`) — only raster image types are
-   served. **SVG is refused** to avoid script injection. A byte cap and per-request
-   timeout are enforced.
+3. **Validates the response** (`src/sanitize.ts`) — raster image types are served
+   as-is. **SVG is sanitized** with [`svg-hush`](https://crates.io/crates/svg-hush)
+   compiled to WASM (`svg-sanitizer/`) — the same allowlist sanitizer Vaultwarden
+   uses internally — then served behind a strict `Content-Security-Policy` sandbox.
+   A byte cap and per-request timeout are enforced.
 4. **Caches** at the edge (Cloudflare Cache API) and returns the bytes with
    `Cache-Control`. When no icon can be found (or the host is rejected) it returns
    a cacheable **404** so each client renders its own built-in placeholder, rather
@@ -121,14 +123,14 @@ npm run lint       # biome lint
 - **SSRF**: only public, name-based http(s) hosts are fetched; IP literals and
   internal/reserved names are refused at request entry and again for every
   discovered icon href.
-- **SVG**: refused (potential XSS) — the Worker serves raster images only.
+- **SVG**: sanitized with `svg-hush` (WASM) to strip scripts and external refs,
+  then served behind a `default-src 'none'; sandbox` CSP — defense in depth.
 - **Abuse**: the endpoint is public (clients reach it via a redirect, so it cannot
   require an auth header). Responses are images only and size-capped. Add a
   Cloudflare WAF rate-limiting rule on the Worker route to bound abuse.
 
 ## Roadmap
 
-- SVG sanitization (serve sanitized SVG instead of refusing).
 - Optional KV-backed negative cache across colos.
 - Optional content-sniffing to reject responses whose bytes don't match an image
   magic number even when the `Content-Type` claims otherwise.

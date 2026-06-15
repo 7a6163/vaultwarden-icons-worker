@@ -9,6 +9,7 @@
 
 import { isAllowedImageType } from "./sanitize";
 import { isPublicHostname, type ParsedDomain } from "./ssrf";
+import { sanitizeSvg } from "./svg";
 
 export interface IconFetchOptions {
 	/** Reject any response whose body exceeds this many bytes. */
@@ -202,7 +203,9 @@ async function fetchIcon(
 	}
 
 	const contentType = response.headers.get("content-type");
-	if (!response.ok || !isAllowedImageType(contentType)) {
+	const mime = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+	const isSvg = mime === "image/svg+xml";
+	if (!response.ok || (!isAllowedImageType(contentType) && !isSvg)) {
 		await drain(response);
 		return null;
 	}
@@ -218,9 +221,15 @@ async function fetchIcon(
 		return null;
 	}
 
-	const mime =
-		(contentType ?? "image/x-icon").split(";")[0]?.trim() ?? "image/x-icon";
-	return { body, contentType: mime };
+	if (isSvg) {
+		const cleaned = sanitizeSvg(new Uint8Array(body));
+		if (!cleaned || cleaned.byteLength === 0) {
+			return null;
+		}
+		return { body: cleaned.buffer as ArrayBuffer, contentType: "image/svg+xml" };
+	}
+
+	return { body, contentType: mime || "image/x-icon" };
 }
 
 /**

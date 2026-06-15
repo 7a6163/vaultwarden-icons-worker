@@ -6,3 +6,8 @@ dist/
 coverage/
 *.log
 .DS_Store
+
+# Rust / WASM (svg-sanitizer)
+# Note: svg-sanitizer/pkg/ IS committed — it holds the portable wasm32 artifact
+# (architecture-independent) so CI and deploy need no Rust toolchain.
+svg-sanitizer/target/
