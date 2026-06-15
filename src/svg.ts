@@ -18,9 +18,15 @@ let initialized = false;
  * could not be processed.
  */
 export function sanitizeSvg(input: Uint8Array): Uint8Array | null {
-	if (!initialized) {
-		initSync({ module: wasmModule });
-		initialized = true;
+	try {
+		if (!initialized) {
+			initSync({ module: wasmModule });
+			initialized = true;
+		}
+		return sanitize_svg(input) ?? null;
+	} catch {
+		// Never throw: a WASM failure degrades to "no usable icon" so the caller
+		// can fall through to the next candidate (e.g. /favicon.ico).
+		return null;
 	}
-	return sanitize_svg(input) ?? null;
 }
