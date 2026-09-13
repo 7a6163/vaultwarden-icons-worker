@@ -1,7 +1,14 @@
 import { defineWorkersConfig } from "@cloudflare/vitest-pool-workers/config";
 
+// Set only while Stryker is verifying a mutant (see test/stryker-setup.ts).
+const mutantId = process.env.__STRYKER_ACTIVE_MUTANT__ ?? null;
+
 export default defineWorkersConfig({
+	define: {
+		__STRYKER_MUTANT_ID__: JSON.stringify(mutantId),
+	},
 	test: {
+		setupFiles: mutantId === null ? [] : ["./test/stryker-setup.ts"],
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: "./wrangler.jsonc" },

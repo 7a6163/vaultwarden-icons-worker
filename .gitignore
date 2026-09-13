@@ -4,6 +4,8 @@ node_modules/
 worker-configuration.d.ts
 dist/
 coverage/
+reports/
+.stryker-tmp/
 *.log
 .DS_Store
 
