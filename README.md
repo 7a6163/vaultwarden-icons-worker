@@ -112,7 +112,7 @@ npm test           # vitest (unit + integration via @cloudflare/vitest-pool-work
 npm run test:coverage  # same, with istanbul coverage (CI enforces 100%)
 npm run test:mutation  # stryker mutation testing (~3.5 min, run locally)
 npm run typecheck  # tsc --noEmit
-npm run lint       # oxlint (formatting stays on biome: npm run format)
+npm run lint       # oxlint     (npm run format = oxfmt)
 ```
 
 ### Testing notes
