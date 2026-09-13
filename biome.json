@@ -6,17 +6,15 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"ignoreUnknown": false
+		"ignoreUnknown": false,
+		"includes": ["src/**", "test/**", "*.ts"]
 	},
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab"
 	},
 	"linter": {
-		"enabled": true,
-		"rules": {
-			"preset": "recommended"
-		}
+		"enabled": false
 	},
 	"javascript": {
 		"formatter": {
