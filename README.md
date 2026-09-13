@@ -1,5 +1,8 @@
 # vaultwarden-icons
 
+[![CI](https://github.com/7a6163/vaultwarden-icons-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/7a6163/vaultwarden-icons-worker/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/7a6163/vaultwarden-icons-worker/branch/main/graph/badge.svg)](https://codecov.io/gh/7a6163/vaultwarden-icons-worker)
+
 A small Cloudflare Worker that resolves and serves website favicons for
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden), so that **your
 Vaultwarden server's IP is never exposed** to the sites your users have saved.
@@ -122,7 +125,8 @@ npm run lint       # oxlint (formatting stays on biome: npm run format)
   deadlock together in the Workers pool. `test/worker-icon.test.ts` covers the
   end-to-end success path (headers, SVG CSP, edge cache) by invoking the handler
   directly with `createExecutionContext()`, which works with `fetchMock`.
-- Coverage is enforced at 100% (statements, branches, functions, lines).
+- Coverage is enforced at 100% (statements, branches, functions, lines) by
+  `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
 - Mutation testing (`npm run test:mutation`) currently kills 447/447 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the

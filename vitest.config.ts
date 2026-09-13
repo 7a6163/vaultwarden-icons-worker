@@ -18,6 +18,8 @@ export default defineWorkersConfig({
 			// v8 coverage is unavailable inside workerd; istanbul instruments source.
 			provider: "istanbul",
 			include: ["src/**/*.ts"],
+			// lcov is what Codecov reads; text keeps the summary in the CI log.
+			reporter: ["text", "lcov"],
 			thresholds: {
 				lines: 100,
 				functions: 100,
