@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "The vitest runner forces pool:'threads', which vitest-pool-workers cannot use, so mutants are verified by re-running the whole suite through the command runner. test/stryker-setup.ts is what actually activates a mutant inside workerd.",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "commandRunner": { "command": "npx vitest run" },
+  "coverageAnalysis": "off",
+  "concurrency": 4,
+  "mutate": ["src/**/*.ts"],
+  "reporters": ["html", "clear-text", "progress"],
+  "thresholds": { "high": 100, "low": 95, "break": 95 }
+}

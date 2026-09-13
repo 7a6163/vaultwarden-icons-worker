@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "no-await-in-loop": "off"
+  },
+  "ignorePatterns": ["svg-sanitizer/pkg/**"],
+  "overrides": [
+    {
+      "files": ["vitest.config.ts", "test/stryker-setup.ts"],
+      "rules": { "no-underscore-dangle": "off" }
+    }
+  ]
+}

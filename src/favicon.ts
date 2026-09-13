@@ -7,7 +7,7 @@
  * content checks before its bytes are returned. No third party is involved.
  */
 
-import { isAllowedImageType } from "./sanitize";
+import { isAllowedImageType, parseMime } from "./sanitize";
 import { isPublicHostname, type ParsedDomain } from "./ssrf";
 import { sanitizeSvg } from "./svg";
 
@@ -79,7 +79,7 @@ async function drain(response: Response): Promise<void> {
  * `maxBytes`. Avoids buffering an entire over-large (or content-length-lying)
  * response into memory. Returns null on overflow or stream error.
  */
-async function readCapped(
+export async function readCapped(
 	response: Response,
 	maxBytes: number,
 ): Promise<ArrayBuffer | null> {
@@ -95,14 +95,12 @@ async function readCapped(
 			if (done) {
 				break;
 			}
-			if (value) {
-				total += value.byteLength;
-				if (total > maxBytes) {
-					await reader.cancel();
-					return null;
-				}
-				chunks.push(value);
+			total += value.byteLength;
+			if (total > maxBytes) {
+				await reader.cancel();
+				return null;
 			}
+			chunks.push(value);
 		}
 	} catch {
 		return null;
@@ -142,7 +140,8 @@ function toFetchableUrl(href: string, origin: string): string | null {
 	return url.toString();
 }
 
-async function collectIconLinks(
+/** Extract icon `<link>` candidates from an HTML response; [] if it can't be read. */
+export async function collectIconLinks(
 	htmlResponse: Response,
 ): Promise<IconCandidate[]> {
 	const candidates: IconCandidate[] = [];
@@ -160,8 +159,14 @@ async function collectIconLinks(
 		},
 	});
 
-	// Consuming the transformed body drives the rewriter to completion.
-	await rewriter.transform(htmlResponse).arrayBuffer();
+	try {
+		// Consuming the transformed body drives the rewriter to completion.
+		await rewriter.transform(htmlResponse).arrayBuffer();
+	} catch {
+		// Unreadable body: degrade to /favicon.ico rather than failing the request.
+		await drain(htmlResponse);
+		return [];
+	}
 	return candidates;
 }
 
@@ -182,16 +187,9 @@ async function discoverCandidateUrls(
 		return [];
 	}
 
-	let links: IconCandidate[];
-	try {
-		links = await collectIconLinks(html);
-	} catch {
-		// Malformed HTML or a mid-stream body error: degrade to /favicon.ico only.
-		await drain(html);
-		return [];
-	}
+	const links = await collectIconLinks(html);
 	return links
-		.sort((a, b) => b.size - a.size)
+		.toSorted((a, b) => b.size - a.size)
 		.map((candidate) => toFetchableUrl(candidate.href, domain.origin))
 		.filter((url): url is string => url !== null);
 }
@@ -208,7 +206,7 @@ async function fetchIcon(
 	}
 
 	const contentType = response.headers.get("content-type");
-	const mime = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+	const mime = parseMime(contentType);
 	const isSvg = mime === "image/svg+xml";
 	if (!response.ok || (!isAllowedImageType(contentType) && !isSvg)) {
 		await drain(response);
@@ -231,10 +229,13 @@ async function fetchIcon(
 		if (!cleaned || cleaned.byteLength === 0) {
 			return null;
 		}
-		return { body: cleaned.buffer as ArrayBuffer, contentType: "image/svg+xml" };
+		return {
+			body: cleaned.buffer as ArrayBuffer,
+			contentType: "image/svg+xml",
+		};
 	}
 
-	return { body, contentType: mime || "image/x-icon" };
+	return { body, contentType: mime };
 }
 
 /**

@@ -4,8 +4,13 @@ node_modules/
 worker-configuration.d.ts
 dist/
 coverage/
+reports/
+.stryker-tmp/
 *.log
 .DS_Store
+
+# Local agent notes, not part of the project
+CLAUDE.md
 
 # Rust / WASM (svg-sanitizer)
 # Note: svg-sanitizer/pkg/ IS committed — it holds the portable wasm32 artifact

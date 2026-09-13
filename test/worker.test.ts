@@ -40,4 +40,24 @@ describe("worker fetch handler", () => {
 		expect(res.status).toBe(405);
 		expect(res.headers.get("allow")).toContain("GET");
 	});
+	test("serves HEAD with the same status and headers but no body", async () => {
+		const res = await SELF.fetch("https://proxy.example/10.0.0.5", {
+			method: "HEAD",
+		});
+		expect(res.status).toBe(404);
+		expect(res.headers.get("x-icon-result")).toBe("none");
+		expect(await res.text()).toBe("");
+	});
+
+	test("responds on /healthz as well as /", async () => {
+		const res = await SELF.fetch("https://proxy.example/healthz");
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain("ok");
+	});
+
+	test("allows cross-origin reads of the 404 placeholder", async () => {
+		const res = await SELF.fetch("https://proxy.example/printer.local");
+		expect(res.status).toBe(404);
+		expect(res.headers.get("access-control-allow-origin")).toBe("*");
+	});
 });

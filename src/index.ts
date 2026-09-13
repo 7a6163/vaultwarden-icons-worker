@@ -26,7 +26,7 @@ const FALLBACK_PRESETS: Readonly<Record<string, string>> = {
 };
 
 /** Resolve FALLBACK_ICON_SERVICE to a URL template, or null when disabled/invalid. */
-function resolveFallbackUrl(value: string | undefined): string | null {
+export function resolveFallbackUrl(value: string | undefined): string | null {
 	const raw = (value ?? "").trim();
 	if (!raw) {
 		return null;
@@ -38,7 +38,7 @@ function resolveFallbackUrl(value: string | undefined): string | null {
 	return raw.startsWith("https://") && raw.includes("{}") ? raw : null;
 }
 
-interface ResolvedConfig extends IconFetchOptions {
+export interface ResolvedConfig extends IconFetchOptions {
 	readonly cacheTtl: number;
 	readonly negativeTtl: number;
 	readonly blockedSuffixes: readonly string[];
@@ -56,7 +56,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
-function resolveConfig(env: Env): ResolvedConfig {
+export function resolveConfig(env: Env): ResolvedConfig {
 	const cacheTtl = positiveInt(env.CACHE_TTL_SECONDS, DEFAULTS.cacheTtl);
 	return {
 		maxBytes: positiveInt(env.MAX_ICON_BYTES, DEFAULTS.maxBytes),

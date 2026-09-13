@@ -1,5 +1,8 @@
 # vaultwarden-icons
 
+[![CI](https://github.com/7a6163/vaultwarden-icons-worker/actions/workflows/ci.yml/badge.svg)](https://github.com/7a6163/vaultwarden-icons-worker/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/7a6163/vaultwarden-icons-worker/branch/main/graph/badge.svg)](https://codecov.io/gh/7a6163/vaultwarden-icons-worker)
+
 A small Cloudflare Worker that resolves and serves website favicons for
 [Vaultwarden](https://github.com/dani-garcia/vaultwarden), so that **your
 Vaultwarden server's IP is never exposed** to the sites your users have saved.
@@ -106,8 +109,10 @@ Set in `wrangler.jsonc` under `vars` (all are strings):
 ```bash
 npm run dev        # local Worker at http://localhost:8787  (try /github.com)
 npm test           # vitest (unit + integration via @cloudflare/vitest-pool-workers)
+npm run test:coverage  # same, with istanbul coverage (CI enforces 100%)
+npm run test:mutation  # stryker mutation testing (~3.5 min, run locally)
 npm run typecheck  # tsc --noEmit
-npm run lint       # biome lint
+npm run lint       # oxlint     (npm run format = oxfmt)
 ```
 
 ### Testing notes
@@ -115,10 +120,18 @@ npm run lint       # biome lint
 - Unit tests (`test/ssrf`, `test/sanitize`, `test/favicon`) cover host validation,
   content-type rules, and the discovery/fetch logic — the favicon tests mock
   outbound HTTP with `fetchMock` from `cloudflare:test`.
-- `test/worker.test.ts` covers routing, validation and fallback through `SELF`.
+- `test/worker.test.ts` covers routing, validation and the 404 path through `SELF`.
   It intentionally does **not** use `fetchMock`: the undici mock and `SELF`
-  deadlock together in the Workers pool, so the outbound path is covered only at
-  the unit level.
+  deadlock together in the Workers pool. `test/worker-icon.test.ts` covers the
+  end-to-end success path (headers, SVG CSP, edge cache) by invoking the handler
+  directly with `createExecutionContext()`, which works with `fetchMock`.
+- Coverage is enforced at 100% (statements, branches, functions, lines) by
+  `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
+- Mutation testing (`npm run test:mutation`) currently kills 447/447 mutants.
+  It runs the whole suite per mutant via Stryker's command runner, because the
+  vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
+  active mutant is handed to workerd by `test/stryker-setup.ts`. It is not part
+  of CI — the sandboxed Workers runtime is occasionally flaky to start.
 
 ## Security
 
