@@ -12,12 +12,14 @@
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
     "lint": "biome lint .",
-    "format": "biome format --write ."
+    "format": "biome format --write .",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
     "@cloudflare/vitest-pool-workers": "^0.9.13",
     "@cloudflare/workers-types": "^4.20260613.1",
+    "@vitest/coverage-istanbul": "~3.2.0",
     "typescript": "^5.9.2",
     "vitest": "~3.2.0",
     "wrangler": "^4.42.0"
