@@ -1,6 +1,6 @@
 {
   "name": "vaultwarden-icons",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Cloudflare Worker that resolves and serves website favicons for Vaultwarden, hiding the server's egress IP from target sites.",
   "type": "module",
