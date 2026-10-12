@@ -22,11 +22,15 @@ afterEach(() => {
 });
 
 /** Each test uses its own domain so the shared edge cache cannot leak between them. */
-async function get(host: string, init?: RequestInit): Promise<Response> {
+async function get(
+	host: string,
+	init?: RequestInit,
+	env: Record<string, string> = ENV,
+): Promise<Response> {
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(
 		new Request(`https://proxy.example/${host}`, init),
-		ENV,
+		env,
 		ctx,
 	);
 	await waitOnExecutionContext(ctx);
@@ -87,6 +91,8 @@ describe("worker icon responses", () => {
 		// No interceptors remain: a second upstream fetch would fail the test.
 		const res = await get("cached.example.com");
 		expect(res.status).toBe(200);
+		expect(res.headers.get("x-icon-result")).toBe("hit");
+		expect(res.headers.get("content-type")).toBe("image/png");
 		expect(await res.text()).toBe("PNGDATA");
 	});
 
@@ -126,6 +132,40 @@ describe("worker icon responses", () => {
 
 		const cached = await get("noicon.example.com");
 		expect(cached.status).toBe(404);
+		expect(cached.headers.get("x-icon-result")).toBe("none");
+	});
+
+	test("caches a miss only briefly when the site looks temporarily down", async () => {
+		fetchMock
+			.get("https://down.example.com")
+			.intercept({ path: "/" })
+			.reply(503, "busy");
+		fetchMock
+			.get("https://down.example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(503, "busy");
+
+		const res = await get("down.example.com");
+		expect(res.status).toBe(404);
+		expect(res.headers.get("cache-control")).toBe("public, max-age=300");
+	});
+
+	test("marks an icon served by the third-party fallback", async () => {
+		mockSite("fb.example.com", "<html></html>");
+		fetchMock
+			.get("https://fb.example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(404, "no");
+		fetchMock
+			.get("https://icons.duckduckgo.com")
+			.intercept({ path: "/ip3/fb.example.com.ico" })
+			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+
+		const res = await get("fb.example.com", undefined, {
+			FALLBACK_ICON_SERVICE: "duckduckgo",
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get("x-icon-result")).toBe("fallback");
 	});
 
 	test("answers HEAD for a resolvable icon with headers but no body", async () => {

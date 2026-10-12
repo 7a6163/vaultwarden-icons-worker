@@ -80,6 +80,9 @@ describe("isPublicHostname", () => {
 		expect(isPublicHostname("db.internal")).toBe(false);
 		expect(isPublicHostname("foo.localhost")).toBe(false);
 		expect(isPublicHostname("host.lan")).toBe(false);
+		expect(isPublicHostname("router.home.arpa")).toBe(false);
+		expect(isPublicHostname("node.alt")).toBe(false);
+		expect(isPublicHostname("hidden.onion")).toBe(false);
 	});
 
 	test("rejects operator-supplied blocked suffixes", () => {

@@ -7,7 +7,7 @@
  * sees Cloudflare's IP, never the Vaultwarden server or the end client.
  */
 
-import { getIcon, type IconFetchOptions } from "./favicon";
+import { type FetchTrace, getIcon, type IconFetchOptions } from "./favicon";
 import { isPublicHostname, parseDomain } from "./ssrf";
 
 export interface Env {
@@ -41,6 +41,8 @@ export function resolveFallbackUrl(value: string | undefined): string | null {
 export interface ResolvedConfig extends IconFetchOptions {
 	readonly cacheTtl: number;
 	readonly negativeTtl: number;
+	/** TTL for a miss caused by a timeout, network error, 5xx or 429. */
+	readonly transientTtl: number;
 	readonly blockedSuffixes: readonly string[];
 }
 
@@ -49,20 +51,24 @@ const DEFAULTS = {
 	timeoutMs: 5_000,
 	cacheTtl: 604_800, // 7 days
 	maxNegativeTtl: 86_400, // 1 day for fallbacks
+	maxTransientTtl: 300, // 5 minutes when the site may just be briefly down
 } as const;
 
 function positiveInt(value: string | undefined, fallback: number): number {
-	const parsed = Number(value);
-	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+	// Floor before the range check, or "0.5" would pass and become 0.
+	const parsed = Math.floor(Number(value));
+	return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
 export function resolveConfig(env: Env): ResolvedConfig {
 	const cacheTtl = positiveInt(env.CACHE_TTL_SECONDS, DEFAULTS.cacheTtl);
+	const negativeTtl = Math.min(cacheTtl, DEFAULTS.maxNegativeTtl);
 	return {
 		maxBytes: positiveInt(env.MAX_ICON_BYTES, DEFAULTS.maxBytes),
 		timeoutMs: positiveInt(env.FETCH_TIMEOUT_MS, DEFAULTS.timeoutMs),
 		cacheTtl,
-		negativeTtl: Math.min(cacheTtl, DEFAULTS.maxNegativeTtl),
+		negativeTtl,
+		transientTtl: Math.min(negativeTtl, DEFAULTS.maxTransientTtl),
 		blockedSuffixes: (env.BLOCKED_SUFFIXES ?? "")
 			.split(",")
 			.map((entry) => entry.trim())
@@ -124,12 +130,20 @@ async function handleIcon(
 	const cache = caches.default;
 	const cached = await cache.match(cacheKey);
 	if (cached) {
-		return cached;
+		if (cached.status !== 200) {
+			return cached;
+		}
+		const hit = new Response(cached.body, cached);
+		hit.headers.set("x-icon-result", "hit");
+		return hit;
 	}
 
-	const icon = await getIcon(domain, config);
+	const trace: FetchTrace = { transient: false };
+	const icon = await getIcon(domain, config, trace);
 	if (!icon) {
-		const miss = notFoundResponse(config.negativeTtl);
+		const miss = notFoundResponse(
+			trace.transient ? config.transientTtl : config.negativeTtl,
+		);
 		ctx.waitUntil(cache.put(cacheKey, miss.clone()));
 		return miss;
 	}
@@ -138,7 +152,7 @@ async function handleIcon(
 		icon.body,
 		icon.contentType,
 		config.cacheTtl,
-		"miss",
+		icon.source === "fallback" ? "fallback" : "miss",
 	);
 	ctx.waitUntil(cache.put(cacheKey, response.clone()));
 	return response;

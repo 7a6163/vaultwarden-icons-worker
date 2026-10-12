@@ -1,6 +1,11 @@
 import { fetchMock } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { collectIconLinks, getIcon, readCapped } from "../src/favicon";
+import {
+	collectIconLinks,
+	type FetchTrace,
+	getIcon,
+	readCapped,
+} from "../src/favicon";
 
 const OPTS = { maxBytes: 524_288, timeoutMs: 5_000 };
 const DOMAIN = { host: "example.com", origin: "https://example.com" };
@@ -474,6 +479,247 @@ describe("getIcon", () => {
 	});
 });
 
+/** Mock the homepage with the given HTML. */
+function mockHome(html: string, origin = "https://example.com"): void {
+	fetchMock
+		.get(origin)
+		.intercept({ path: "/" })
+		.reply(200, html, { headers: { "content-type": "text/html" } });
+}
+
+function mockPath(
+	path: string,
+	status: number,
+	body = "",
+	headers: Record<string, string> = {},
+	origin = "https://example.com",
+): void {
+	fetchMock.get(origin).intercept({ path }).reply(status, body, { headers });
+}
+
+describe("candidate ranking", () => {
+	test("ranks by the largest of several declared sizes", async () => {
+		mockHome(
+			'<link rel="icon" href="/mid.png" sizes="64x64">' +
+				'<link rel="icon" href="/multi.ico" sizes="16x16 32x32 256x256">',
+		);
+		mockPath("/multi.ico", 200, "ICO", { "content-type": "image/x-icon" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
+
+	test("reads sizes case-insensitively and uses the longer edge", async () => {
+		mockHome(
+			'<link rel="icon" href="/a.png" sizes="32x32">' +
+				'<link rel="icon" href="/b.png" sizes="16X48">',
+		);
+		mockPath("/b.png", 200, "B", { "content-type": "image/png" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(new Uint8Array(icon?.body ?? new ArrayBuffer(0))).toEqual(enc("B"));
+	});
+
+	test("tries a mask-icon only after unsized icons", async () => {
+		mockHome(
+			'<link rel="mask-icon" href="/mask.svg">' +
+				'<link rel="icon" href="/plain.png">',
+		);
+		mockPath("/plain.png", 200, "PNG", { "content-type": "image/png" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/png");
+	});
+
+	test("still reaches /favicon.ico when more links are declared than tried", async () => {
+		mockHome(
+			Array.from(
+				{ length: 7 },
+				(_, i) =>
+					`<link rel="icon" href="/i${i}.png" sizes="${90 - i}x${90 - i}">`,
+			).join(""),
+		);
+		for (let i = 0; i < 5; i += 1) {
+			mockPath(`/i${i}.png`, 404);
+		}
+		mockPath("/favicon.ico", 200, "ICO", { "content-type": "image/x-icon" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
+});
+
+describe("href resolution", () => {
+	test("resolves relative hrefs against the final URL after a redirect", async () => {
+		mockPath("/", 301, "", { location: "https://www.example.com/en/" });
+		fetchMock
+			.get("https://www.example.com")
+			.intercept({ path: "/en/" })
+			.reply(200, '<link rel="icon" href="img/fav.png">', {
+				headers: { "content-type": "text/html" },
+			});
+		mockPath(
+			"/en/img/fav.png",
+			200,
+			"PNG",
+			{ "content-type": "image/png" },
+			"https://www.example.com",
+		);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/png");
+	});
+
+	test("honours the first <base href>", async () => {
+		mockHome(
+			'<base target="_top"><base href="/assets/"><base href="/ignored/">' +
+				'<link rel="icon" href="fav.png">',
+		);
+		mockPath("/assets/fav.png", 200, "PNG", { "content-type": "image/png" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/png");
+	});
+
+	test("ignores an unparseable <base href>", async () => {
+		mockHome('<base href="http://["><link rel="icon" href="fav.png">');
+		mockPath("/fav.png", 200, "PNG", { "content-type": "image/png" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/png");
+	});
+});
+
+describe("content sniffing", () => {
+	test("serves a generic-typed favicon whose bytes are a known image", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 200, "\u0000\u0000\u0001\u0000ICO", {
+			"content-type": "application/octet-stream",
+		});
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
+
+	test("refuses a generic-typed response whose bytes are not an image", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 200, "<html>not found</html>", {
+			"content-type": "text/plain",
+		});
+
+		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
+	});
+});
+
+describe("icon source", () => {
+	test("reports an icon found on the site itself", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 200, "ICO", { "content-type": "image/x-icon" });
+
+		expect((await getIcon(DOMAIN, OPTS))?.source).toBe("site");
+	});
+
+	test("reports an icon served by the fallback service", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 404);
+		fetchMock
+			.get("https://icons.duckduckgo.com")
+			.intercept({ path: "/ip3/example.com.ico" })
+			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+
+		const icon = await getIcon(DOMAIN, {
+			...OPTS,
+			fallbackUrl: "https://icons.duckduckgo.com/ip3/{}.ico",
+		});
+		expect(icon?.source).toBe("fallback");
+	});
+});
+
+describe("transient failures", () => {
+	test("are not flagged when the site cleanly has no icon", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 404);
+
+		const trace: FetchTrace = { transient: false };
+		expect(await getIcon(DOMAIN, OPTS, trace)).toBeNull();
+		expect(trace.transient).toBe(false);
+	});
+
+	test("are flagged on a 5xx", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 503);
+
+		const trace: FetchTrace = { transient: false };
+		expect(await getIcon(DOMAIN, OPTS, trace)).toBeNull();
+		expect(trace.transient).toBe(true);
+	});
+
+	test("are flagged on a 500 exactly", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 500);
+
+		const trace: FetchTrace = { transient: false };
+		await getIcon(DOMAIN, OPTS, trace);
+		expect(trace.transient).toBe(true);
+	});
+
+	test("are flagged on a 429", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 429);
+
+		const trace: FetchTrace = { transient: false };
+		await getIcon(DOMAIN, OPTS, trace);
+		expect(trace.transient).toBe(true);
+	});
+
+	test("are flagged when a request fails outright", async () => {
+		// No interceptors: with net connect disabled, every fetch throws.
+		const trace: FetchTrace = { transient: false };
+		expect(await getIcon(DOMAIN, OPTS, trace)).toBeNull();
+		expect(trace.transient).toBe(true);
+	});
+
+	test("are not flagged by a 4xx other than 429", async () => {
+		mockHome("<html></html>");
+		mockPath("/favicon.ico", 499);
+
+		const trace: FetchTrace = { transient: false };
+		await getIcon(DOMAIN, OPTS, trace);
+		expect(trace.transient).toBe(false);
+	});
+});
+
+describe("lookup deadline", () => {
+	test("stops the whole lookup once the total time budget is spent", async () => {
+		// Each request fits the 100ms per-request timeout, but together they
+		// exceed the 200ms budget, so the last candidate is never reached.
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(
+				200,
+				'<link rel="icon" href="/a.png"><link rel="icon" href="/b.png">',
+				{
+					headers: { "content-type": "text/html" },
+				},
+			)
+			.delay(80);
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/a.png" })
+			.reply(404, "no")
+			.delay(80);
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/b.png" })
+			.reply(200, "PNG", { headers: { "content-type": "image/png" } })
+			.delay(80);
+
+		const icon = await getIcon(DOMAIN, { maxBytes: 1_000, timeoutMs: 100 });
+		expect(icon).toBeNull();
+	});
+});
+
 describe("redirects", () => {
 	test("follows a redirect to a public host", async () => {
 		fetchMock
@@ -591,7 +837,7 @@ describe("blocked suffixes", () => {
 describe("collectIconLinks", () => {
 	test("collects at most MAX_DISCOVERED_LINKS candidates from hostile HTML", async () => {
 		const html = '<link rel="icon" href="/i.png">'.repeat(60);
-		const links = await collectIconLinks(
+		const { links } = await collectIconLinks(
 			new Response(html, { headers: { "content-type": "text/html" } }),
 		);
 		expect(links).toHaveLength(50);
@@ -612,7 +858,7 @@ describe("collectIconLinks", () => {
 			'<link rel="" href="/no4">',
 		].join("");
 
-		const links = await collectIconLinks(new Response(html));
+		const { links } = await collectIconLinks(new Response(html));
 		expect(links.map((link) => link.href)).toEqual([
 			"/a",
 			"/b",
@@ -634,7 +880,7 @@ describe("collectIconLinks", () => {
 				controller.enqueue(enc("<p>more</p>"));
 			},
 		});
-		const links = await collectIconLinks(new Response(stream));
+		const { links } = await collectIconLinks(new Response(stream));
 		expect(links.map((link) => link.href)).toEqual(["/a.png"]);
 	});
 
@@ -651,20 +897,23 @@ describe("collectIconLinks", () => {
 				controller.enqueue(chunk);
 			},
 		});
-		const links = await collectIconLinks(new Response(stream));
+		const { links } = await collectIconLinks(new Response(stream));
 		expect(links.map((link) => link.href)).toEqual(["/a.png"]);
 		expect(pulls).toBeLessThan(40);
 	});
 
 	test("returns no candidates for a bodyless response", async () => {
-		expect(await collectIconLinks(new Response(null))).toEqual([]);
+		expect(await collectIconLinks(new Response(null))).toEqual({
+			base: null,
+			links: [],
+		});
 	});
 
 	test("degrades to no candidates when the body cannot be read", async () => {
 		const response = new Response('<link rel="icon" href="/a.png">');
 		await response.text(); // body now disturbed: the rewriter cannot consume it
 
-		expect(await collectIconLinks(response)).toEqual([]);
+		expect(await collectIconLinks(response)).toEqual({ base: null, links: [] });
 	});
 });
 
