@@ -21,6 +21,8 @@ export interface IconFetchOptions {
 	 * Fetched server-side only when own discovery fails. Null/undefined disables it.
 	 */
 	readonly fallbackUrl?: string | null;
+	/** Operator-blocked hostname suffixes, enforced on every outbound URL and redirect hop. */
+	readonly blockedSuffixes?: readonly string[];
 }
 
 export interface IconResult {
@@ -54,16 +56,42 @@ const MAX_CANDIDATES = 5;
 /** Max <link> icon candidates to collect from a page (bounds memory on hostile HTML). */
 const MAX_DISCOVERED_LINKS = 50;
 
-function timedFetch(
+/** Max homepage bytes fed to the HTML parser (icon links live in <head>). */
+const MAX_HTML_BYTES = 1_048_576;
+
+/** Max redirect hops followed per outbound request. */
+const MAX_REDIRECTS = 5;
+
+/**
+ * Fetch with a single timeout across all hops. Redirects are followed manually
+ * so every Location is re-validated against the SSRF guard — `redirect: "follow"`
+ * would let a public site bounce the Worker to a blocked or internal host.
+ * Throws when a redirect is refused or the hop limit is exceeded.
+ */
+async function timedFetch(
 	url: string,
 	accept: string,
-	timeoutMs: number,
+	options: IconFetchOptions,
 ): Promise<Response> {
-	return fetch(url, {
-		redirect: "follow",
-		signal: AbortSignal.timeout(timeoutMs),
-		headers: { "user-agent": USER_AGENT, accept },
-	});
+	const signal = AbortSignal.timeout(options.timeoutMs);
+	let current = url;
+	for (let hop = 0; ; hop += 1) {
+		const response = await fetch(current, {
+			redirect: "manual",
+			signal,
+			headers: { "user-agent": USER_AGENT, accept },
+		});
+		const location = response.headers.get("location");
+		if (response.status < 300 || response.status >= 400 || !location) {
+			return response;
+		}
+		await drain(response);
+		const next = toFetchableUrl(location, current, options.blockedSuffixes);
+		if (!next || hop >= MAX_REDIRECTS) {
+			throw new Error("redirect refused");
+		}
+		current = next;
+	}
 }
 
 async function drain(response: Response): Promise<void> {
@@ -123,45 +151,78 @@ function parseSize(sizes: string | null): number {
 	return match ? Number(match[1]) : 0;
 }
 
-/** Resolve a discovered href to an absolute, fetchable, public http(s) URL — or null. */
-function toFetchableUrl(href: string, origin: string): string | null {
+/** Resolve an href or Location to an absolute, fetchable, public http(s) URL — or null. */
+function toFetchableUrl(
+	href: string,
+	base: string,
+	blockedSuffixes?: readonly string[],
+): string | null {
 	let url: URL;
 	try {
-		url = new URL(href, origin);
+		url = new URL(href, base);
 	} catch {
 		return null;
 	}
 	if (url.protocol !== "https:" && url.protocol !== "http:") {
 		return null;
 	}
-	if (!isPublicHostname(url.hostname)) {
+	if (!isPublicHostname(url.hostname, blockedSuffixes)) {
 		return null;
 	}
 	return url.toString();
 }
 
-/** Extract icon `<link>` candidates from an HTML response; [] if it can't be read. */
+/**
+ * Extract icon `<link>` candidates from an HTML response. Parsing stops at
+ * `<body>` or after MAX_HTML_BYTES, so a huge or endless page cannot exhaust
+ * memory. Returns [] if the body can't be read.
+ */
 export async function collectIconLinks(
 	htmlResponse: Response,
 ): Promise<IconCandidate[]> {
 	const candidates: IconCandidate[] = [];
-	const rewriter = new HTMLRewriter().on("link", {
-		element(el) {
-			const rel = (el.getAttribute("rel") ?? "").toLowerCase();
-			const isIcon = rel.split(/\s+/).some((token) => ICON_RELS.has(token));
-			if (!isIcon) {
-				return;
-			}
-			const href = el.getAttribute("href");
-			if (href && candidates.length < MAX_DISCOVERED_LINKS) {
-				candidates.push({ href, size: parseSize(el.getAttribute("sizes")) });
-			}
-		},
-	});
+	let reachedBody = false;
+	const rewriter = new HTMLRewriter()
+		.on("body", {
+			element() {
+				reachedBody = true;
+			},
+		})
+		.on("link", {
+			element(el) {
+				const rel = (el.getAttribute("rel") ?? "").toLowerCase();
+				const isIcon = rel.split(/\s+/).some((token) => ICON_RELS.has(token));
+				if (!isIcon) {
+					return;
+				}
+				const href = el.getAttribute("href");
+				if (href && candidates.length < MAX_DISCOVERED_LINKS) {
+					candidates.push({ href, size: parseSize(el.getAttribute("sizes")) });
+				}
+			},
+		});
 
 	try {
-		// Consuming the transformed body drives the rewriter to completion.
-		await rewriter.transform(htmlResponse).arrayBuffer();
+		// Consuming the transformed body is what drives the rewriter.
+		const body = rewriter.transform(htmlResponse).body;
+		if (!body) {
+			return candidates;
+		}
+		const reader = body.getReader();
+		let total = 0;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			total += value.byteLength;
+			// Just stop pulling: backpressure halts the upstream read, and the
+			// connection closes with the request. Cancelling the rewriter's output
+			// instead leaves an unhandled "Stream was cancelled" in the runtime.
+			if (reachedBody || total > MAX_HTML_BYTES) {
+				break;
+			}
+		}
 	} catch {
 		// Unreadable body: degrade to /favicon.ico rather than failing the request.
 		await drain(htmlResponse);
@@ -172,11 +233,11 @@ export async function collectIconLinks(
 
 async function discoverCandidateUrls(
 	domain: ParsedDomain,
-	timeoutMs: number,
+	options: IconFetchOptions,
 ): Promise<string[]> {
 	let html: Response;
 	try {
-		html = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, timeoutMs);
+		html = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, options);
 	} catch {
 		return [];
 	}
@@ -190,7 +251,9 @@ async function discoverCandidateUrls(
 	const links = await collectIconLinks(html);
 	return links
 		.toSorted((a, b) => b.size - a.size)
-		.map((candidate) => toFetchableUrl(candidate.href, domain.origin))
+		.map((candidate) =>
+			toFetchableUrl(candidate.href, domain.origin, options.blockedSuffixes),
+		)
 		.filter((url): url is string => url !== null);
 }
 
@@ -200,7 +263,7 @@ async function fetchIcon(
 ): Promise<IconResult | null> {
 	let response: Response;
 	try {
-		response = await timedFetch(url, ACCEPT_IMAGE, options.timeoutMs);
+		response = await timedFetch(url, ACCEPT_IMAGE, options);
 	} catch {
 		return null;
 	}
@@ -247,7 +310,7 @@ export async function getIcon(
 	domain: ParsedDomain,
 	options: IconFetchOptions,
 ): Promise<IconResult | null> {
-	const discovered = await discoverCandidateUrls(domain, options.timeoutMs);
+	const discovered = await discoverCandidateUrls(domain, options);
 	const ordered = [...discovered, `${domain.origin}/favicon.ico`];
 
 	const seen = new Set<string>();

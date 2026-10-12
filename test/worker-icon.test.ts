@@ -90,6 +90,28 @@ describe("worker icon responses", () => {
 		expect(await res.text()).toBe("PNGDATA");
 	});
 
+	test("shares one cache entry across equivalent paths", async () => {
+		mockSite("norm.example.com", '<link rel="icon" href="/fav.png">');
+		fetchMock
+			.get("https://norm.example.com")
+			.intercept({ path: "/fav.png" })
+			.reply(200, "PNGDATA", { headers: { "content-type": "image/png" } });
+
+		expect((await get("norm.example.com")).status).toBe(200);
+
+		// No interceptors remain: any of these missing the cache would fail.
+		for (const variant of [
+			"Norm.Example.com",
+			"norm.example.com/",
+			"norm.example.com/random-junk",
+			"norm%2Eexample.com",
+		]) {
+			const res = await get(variant);
+			expect(res.status).toBe(200);
+			expect(await res.text()).toBe("PNGDATA");
+		}
+	});
+
 	test("caches the 404 when no icon can be resolved", async () => {
 		mockSite("noicon.example.com", "<html></html>");
 		fetchMock

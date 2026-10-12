@@ -107,21 +107,24 @@ function notFoundResponse(negativeTtl: number): Response {
 }
 
 async function handleIcon(
-	pathname: string,
+	url: URL,
 	config: ResolvedConfig,
 	ctx: ExecutionContext,
-	cacheKey: Request,
 ): Promise<Response> {
+	const domain = parseDomain(url.pathname);
+	if (!domain || !isPublicHostname(domain.host, config.blockedSuffixes)) {
+		// Don't cache rejections of arbitrary input at the edge.
+		return notFoundResponse(config.negativeTtl);
+	}
+
+	// Key on the normalized target, not the raw path: /GitHub.com, /github.com/
+	// and /github.com/<junk> resolve to the same icon and must share one entry,
+	// or a random suffix would bypass the cache and fan out upstream every time.
+	const cacheKey = new Request(`${url.origin}/${new URL(domain.origin).host}`);
 	const cache = caches.default;
 	const cached = await cache.match(cacheKey);
 	if (cached) {
 		return cached;
-	}
-
-	const domain = parseDomain(pathname);
-	if (!domain || !isPublicHostname(domain.host, config.blockedSuffixes)) {
-		// Don't cache rejections of arbitrary input at the edge.
-		return notFoundResponse(config.negativeTtl);
 	}
 
 	const icon = await getIcon(domain, config);
@@ -170,10 +173,7 @@ export default {
 		}
 
 		try {
-			const cacheKey = new Request(`${url.origin}${url.pathname}`, {
-				method: "GET",
-			});
-			const response = await handleIcon(url.pathname, config, ctx, cacheKey);
+			const response = await handleIcon(url, config, ctx);
 
 			if (request.method === "HEAD") {
 				return new Response(null, {

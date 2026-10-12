@@ -474,6 +474,120 @@ describe("getIcon", () => {
 	});
 });
 
+describe("redirects", () => {
+	test("follows a redirect to a public host", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(301, "", {
+				headers: { location: "https://cdn.example.org/f.ico" },
+			});
+		fetchMock
+			.get("https://cdn.example.org")
+			.intercept({ path: "/f.ico" })
+			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
+
+	test("refuses a redirect to an internal host", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(302, "", { headers: { location: "http://10.0.0.5/" } });
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(302, "", { headers: { location: "http://printer.local/f.ico" } });
+
+		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
+	});
+
+	test("refuses a redirect to an operator-blocked suffix", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(302, "", {
+				headers: { location: "https://intranet.corp.example.org/f.ico" },
+			});
+
+		expect(
+			await getIcon(DOMAIN, { ...OPTS, blockedSuffixes: ["corp.example.org"] }),
+		).toBeNull();
+	});
+
+	test("gives up after too many redirect hops", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(302, "", { headers: { location: "/loop" } });
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/loop" })
+			.reply(302, "", { headers: { location: "/loop" } })
+			.times(5);
+
+		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
+	});
+
+	test("treats a redirect without a Location as a failed response", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(302, "");
+
+		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
+	});
+});
+
+describe("blocked suffixes", () => {
+	test("skips discovered links on an operator-blocked suffix", async () => {
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/" })
+			.reply(
+				200,
+				'<link rel="icon" href="https://intranet.corp.example.org/logo.png">',
+				{ headers: { "content-type": "text/html" } },
+			);
+		fetchMock
+			.get("https://example.com")
+			.intercept({ path: "/favicon.ico" })
+			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+
+		const icon = await getIcon(DOMAIN, {
+			...OPTS,
+			blockedSuffixes: ["corp.example.org"],
+		});
+		expect(icon?.contentType).toBe("image/x-icon");
+	});
+});
+
 describe("collectIconLinks", () => {
 	test("collects at most MAX_DISCOVERED_LINKS candidates from hostile HTML", async () => {
 		const html = '<link rel="icon" href="/i.png">'.repeat(60);
@@ -508,6 +622,42 @@ describe("collectIconLinks", () => {
 			"/f",
 			"/g",
 		]);
+	});
+
+	test("stops reading at <body> instead of consuming the whole page", async () => {
+		// The stream never closes: reading to the end would hang the test.
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(
+					enc('<html><head><link rel="icon" href="/a.png"></head><body>'),
+				);
+				controller.enqueue(enc("<p>more</p>"));
+			},
+		});
+		const links = await collectIconLinks(new Response(stream));
+		expect(links.map((link) => link.href)).toEqual(["/a.png"]);
+	});
+
+	test("stops reading after the HTML byte cap", async () => {
+		// An endless page with no <body> tag: only the byte cap ends the read.
+		const chunk = enc(`<!-- ${"x".repeat(65_536)} -->`);
+		let pulls = 0;
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(enc('<link rel="icon" href="/a.png">'));
+			},
+			pull(controller) {
+				pulls += 1;
+				controller.enqueue(chunk);
+			},
+		});
+		const links = await collectIconLinks(new Response(stream));
+		expect(links.map((link) => link.href)).toEqual(["/a.png"]);
+		expect(pulls).toBeLessThan(40);
+	});
+
+	test("returns no candidates for a bodyless response", async () => {
+		expect(await collectIconLinks(new Response(null))).toEqual([]);
 	});
 
 	test("degrades to no candidates when the body cannot be read", async () => {

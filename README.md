@@ -127,7 +127,7 @@ npm run lint       # oxlint     (npm run format = oxfmt)
   directly with `createExecutionContext()`, which works with `fetchMock`.
 - Coverage is enforced at 100% (statements, branches, functions, lines) by
   `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
-- Mutation testing (`npm run test:mutation`) currently kills 447/447 mutants.
+- Mutation testing (`npm run test:mutation`) currently kills 493/493 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
   active mutant is handed to workerd by `test/stryker-setup.ts`. It is not part
@@ -136,8 +136,11 @@ npm run lint       # oxlint     (npm run format = oxfmt)
 ## Security
 
 - **SSRF**: only public, name-based http(s) hosts are fetched; IP literals and
-  internal/reserved names are refused at request entry and again for every
-  discovered icon href.
+  internal/reserved names (and `BLOCKED_SUFFIXES`) are refused at request entry,
+  for every discovered icon href, and for every redirect hop (redirects are
+  followed manually, at most 5).
+- **Caching**: the edge cache is keyed on the normalized host, so path variants
+  (`/GitHub.com`, `/github.com/<junk>`) cannot bypass it.
 - **SVG**: sanitized with `svg-hush` (WASM) to strip scripts and external refs,
   then served behind a `default-src 'none'; sandbox` CSP — defense in depth.
 - **Abuse**: the endpoint is public (clients reach it via a redirect, so it cannot
