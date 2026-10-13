@@ -68,6 +68,12 @@ export interface IconLinks {
 	readonly links: IconCandidate[];
 }
 
+interface Discovered {
+	/** Origin the homepage finally landed on after redirects, if it answered. */
+	readonly pageOrigin: string | null;
+	readonly icons: DiscoveredUrl[];
+}
+
 /** Per-lookup state shared by every outbound request. */
 interface Lookup {
 	readonly options: IconFetchOptions;
@@ -325,26 +331,27 @@ function resolveBase(base: string | null, pageUrl: string): string {
 async function discoverCandidateUrls(
 	domain: ParsedDomain,
 	lookup: Lookup,
-): Promise<DiscoveredUrl[]> {
+): Promise<Discovered> {
 	let page: Fetched;
 	try {
 		page = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, lookup);
 	} catch {
-		return [];
+		return { pageOrigin: null, icons: [] };
 	}
 	const html = page.response;
+	const pageOrigin = new URL(page.url).origin;
 
 	const contentType = html.headers.get("content-type") ?? "";
 	if (!html.ok || !contentType.includes("html")) {
 		await drain(html);
-		return [];
+		return { pageOrigin, icons: [] };
 	}
 
 	// Relative hrefs resolve against the final page URL (after redirects) or
 	// the page's <base href>, as a browser would.
 	const { base, links } = await collectIconLinks(html);
 	const baseUrl = resolveBase(base, page.url);
-	return links
+	const icons = links
 		.toSorted((a, b) => b.size - a.size)
 		.map((candidate) => ({
 			url: toFetchableUrl(
@@ -355,6 +362,7 @@ async function discoverCandidateUrls(
 			size: candidate.size,
 		}))
 		.filter((found): found is DiscoveredUrl => found.url !== null);
+	return { pageOrigin, icons };
 }
 
 async function fetchIcon(
@@ -412,7 +420,9 @@ async function fetchIcon(
 /**
  * Resolve and return the best available favicon for a domain, or null if none
  * could be retrieved. Tries declared `<link>` icons (largest first, at most
- * MAX_CANDIDATES) then `/favicon.ico`. The whole lookup shares a time budget.
+ * MAX_CANDIDATES) then `/favicon.ico`, plus the `/favicon.ico` of the origin
+ * the homepage redirected to (e.g. a login or shop host). The whole lookup
+ * shares a time budget.
  */
 export async function getIcon(
 	domain: ParsedDomain,
@@ -426,16 +436,21 @@ export async function getIcon(
 	};
 	// url -> declared size, deduped (first, i.e. largest, wins) and capped,
 	// always leaving a slot for /favicon.ico.
+	const { pageOrigin, icons } = await discoverCandidateUrls(domain, lookup);
 	const declared = new Map<string, number>();
-	for (const { url, size } of await discoverCandidateUrls(domain, lookup)) {
+	for (const { url, size } of icons) {
 		if (!declared.has(url)) {
 			declared.set(url, size);
 		}
 	}
 	const ordered = new Map([...declared].slice(0, MAX_CANDIDATES));
-	const favicon = `${domain.origin}/favicon.ico`;
-	if (!ordered.has(favicon)) {
-		ordered.set(favicon, 0);
+	// The redirect target was SSRF-checked hop by hop in timedFetch, so its
+	// /favicon.ico is as safe to fetch as the original origin's.
+	for (const origin of [domain.origin, pageOrigin ?? domain.origin]) {
+		const favicon = `${origin}/favicon.ico`;
+		if (!ordered.has(favicon)) {
+			ordered.set(favicon, 0);
+		}
 	}
 
 	// An icon smaller than its declared size lied about it (e.g. a 32px file

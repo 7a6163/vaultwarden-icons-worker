@@ -58,7 +58,8 @@ For a request to `/<domain>` the Worker:
 2. **Discovers candidates** (`src/favicon.ts`) — fetches the site HTML and uses
    [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/)
    to extract `<link rel="icon">` / `apple-touch-icon` hrefs, ordered by declared
-   size, then falls back to `/favicon.ico`. Real dimensions are read from each
+   size, then falls back to `/favicon.ico` (and, when the homepage redirects to
+   another host such as a login or shop page, that host's `/favicon.ico`). Real dimensions are read from each
    image header (PNG, GIF, ICO, WebP); an icon smaller than its declared `sizes`
    (e.g. a 32×32 file tagged `192x192`) is set aside while the next candidate is
    tried, and the larger of the two wins. Every discovered href is re-validated
@@ -137,7 +138,7 @@ npm run lint       # oxlint     (npm run format = oxfmt)
   directly with `createExecutionContext()`, which works with `fetchMock`.
 - Coverage is enforced at 100% (statements, branches, functions, lines) by
   `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
-- Mutation testing (`npm run test:mutation`) currently kills 699/699 mutants.
+- Mutation testing (`npm run test:mutation`) currently kills 705/705 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
   active mutant is handed to workerd by `test/stryker-setup.ts`. It does not gate

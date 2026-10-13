@@ -903,6 +903,53 @@ describe("redirects", () => {
 		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
 	});
 
+	test("tries /favicon.ico on the host the homepage redirected to", async () => {
+		// tw.battle.net: the homepage bounces to a shop host whose login page
+		// answers 401, and only that host serves a favicon.
+		mockPath("/", 301, "", { location: "https://shop.example.org/login" });
+		fetchMock
+			.get("https://shop.example.org")
+			.intercept({ path: "/login" })
+			.reply(401, "");
+		mockPath("/favicon.ico", 404);
+		mockPath(
+			"/favicon.ico",
+			200,
+			"SHOP",
+			{ "content-type": "image/x-icon" },
+			"https://shop.example.org",
+		);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.source).toBe("site");
+		expect(new TextDecoder().decode(icon?.body)).toBe("SHOP");
+	});
+
+	test("prefers the original host's /favicon.ico over the redirect target's", async () => {
+		mockPath("/", 302, "", { location: "https://shop.example.org/" });
+		fetchMock
+			.get("https://shop.example.org")
+			.intercept({ path: "/" })
+			.reply(200, "<html></html>", {
+				headers: { "content-type": "text/html" },
+			});
+		mockPath("/favicon.ico", 200, "OWN", { "content-type": "image/x-icon" });
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(new TextDecoder().decode(icon?.body)).toBe("OWN");
+	});
+
+	test("fetches /favicon.ico once when the homepage stays on its origin", async () => {
+		const trace = { transient: false };
+		mockPath("/", 302, "", { location: "/home" });
+		mockPath("/home", 404);
+		mockPath("/favicon.ico", 404);
+
+		// A second, unmocked fetch would throw and mark the trace transient.
+		expect(await getIcon(DOMAIN, OPTS, trace)).toBeNull();
+		expect(trace.transient).toBe(false);
+	});
+
 	test("treats a redirect without a Location as a failed response", async () => {
 		fetchMock
 			.get("https://example.com")
