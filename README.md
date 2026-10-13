@@ -156,6 +156,7 @@ npm run dev        # local Worker at http://localhost:8787  (try /github.com)
 npm test           # vitest (unit + integration via @cloudflare/vitest-pool-workers)
 npm run test:coverage  # same, with istanbul coverage (CI enforces 100%)
 npm run test:mutation  # stryker mutation testing (~4 min)
+npm run clean:workerd  # kill workerd processes left behind by test runs
 npm run typecheck  # tsc --noEmit
 npm run lint       # oxlint     (npm run format = oxfmt)
 ```
@@ -172,6 +173,10 @@ npm run lint       # oxlint     (npm run format = oxfmt)
   directly with `createExecutionContext()`, which works with `fetchMock`.
 - Coverage is enforced at 100% (statements, branches, functions, lines) by
   `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
+- `vitest-pool-workers` can leave `workerd` processes running after a test run.
+  A mutation run leaves one per mutant (~750), enough to exhaust macOS's process
+  limit (`spawn EAGAIN`), so `test:mutation` ends with `npm run clean:workerd`,
+  which only kills this checkout's `workerd` and keeps Stryker's exit code.
 - Mutation testing (`npm run test:mutation`) currently kills 744/744 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
