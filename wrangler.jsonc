@@ -19,7 +19,7 @@
     // Optional third-party fallback when own discovery fails (server-side fetch,
     // client never exposed). "" = off. Presets: duckduckgo | google | bitwarden,
     // or a custom https URL with one {} placeholder.
-    "FALLBACK_ICON_SERVICE": ""
+    "FALLBACK_ICON_SERVICE": "duckduckgo"
   }
   // Production: bind a custom domain via a route, e.g.
   // "routes": [{ "pattern": "vaultwarden-icons.example.com", "custom_domain": true }]
