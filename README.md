@@ -115,7 +115,7 @@ Set in `wrangler.jsonc` under `vars` (all are strings):
 npm run dev        # local Worker at http://localhost:8787  (try /github.com)
 npm test           # vitest (unit + integration via @cloudflare/vitest-pool-workers)
 npm run test:coverage  # same, with istanbul coverage (CI enforces 100%)
-npm run test:mutation  # stryker mutation testing (~3.5 min, run locally)
+npm run test:mutation  # stryker mutation testing (~4 min)
 npm run typecheck  # tsc --noEmit
 npm run lint       # oxlint     (npm run format = oxfmt)
 ```
@@ -135,8 +135,10 @@ npm run lint       # oxlint     (npm run format = oxfmt)
 - Mutation testing (`npm run test:mutation`) currently kills or times out 591/591 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
-  active mutant is handed to workerd by `test/stryker-setup.ts`. It is not part
-  of CI — the sandboxed Workers runtime is occasionally flaky to start.
+  active mutant is handed to workerd by `test/stryker-setup.ts`. It does not gate
+  PRs (the sandboxed Workers runtime is occasionally flaky to start); instead
+  `.github/workflows/mutation.yml` runs it weekly (Mondays 03:00 UTC, or on
+  demand from the Actions tab) and uploads the HTML report as an artifact.
 
 ## Security
 
