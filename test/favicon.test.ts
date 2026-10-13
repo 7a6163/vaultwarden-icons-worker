@@ -6,6 +6,7 @@ import {
 	getIcon,
 	readCapped,
 } from "../src/favicon";
+import { ico, png } from "./images";
 
 const OPTS = { maxBytes: 524_288, timeoutMs: 5_000 };
 const DOMAIN = { host: "example.com", origin: "https://example.com" };
@@ -717,6 +718,113 @@ describe("lookup deadline", () => {
 
 		const icon = await getIcon(DOMAIN, { maxBytes: 1_000, timeoutMs: 100 });
 		expect(icon).toBeNull();
+	});
+});
+
+const PNG = { "content-type": "image/png" };
+const ICO = { "content-type": "image/x-icon" };
+
+function reply(
+	path: string,
+	bytes: Uint8Array,
+	headers: Record<string, string>,
+): void {
+	fetchMock
+		.get("https://example.com")
+		.intercept({ path })
+		.reply(200, bytes, { headers });
+}
+
+const sizeOf = (icon: { size: number | null } | null) => icon?.size;
+
+describe("declared vs real size", () => {
+	test("fetches /favicon.ico once when the page also declares it", async () => {
+		mockHome('<link rel="icon" href="/favicon.ico" sizes="32x32">');
+		reply("/favicon.ico", ico([32, 32]), ICO);
+
+		expect(sizeOf(await getIcon(DOMAIN, OPTS))).toBe(32);
+	});
+
+	test("skips an icon smaller than it claims for an honest one", async () => {
+		// Instagram: sizes="192x192" on a 32x32 file, plus a real 180x180.
+		mockHome(
+			'<link rel="icon" href="/liar.png" sizes="192x192">' +
+				'<link rel="apple-touch-icon" href="/touch.png" sizes="180x180">',
+		);
+		reply("/liar.png", png(32, 32), PNG);
+		reply("/touch.png", png(180, 180), PNG);
+
+		expect(sizeOf(await getIcon(DOMAIN, OPTS))).toBe(180);
+	});
+
+	test("keeps the liar when the honest icon found later is smaller", async () => {
+		mockHome('<link rel="icon" href="/liar.png" sizes="192x192">');
+		reply("/liar.png", png(32, 32), PNG);
+		reply("/favicon.ico", ico([16, 16]), ICO);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(sizeOf(icon)).toBe(32);
+		expect(icon?.source).toBe("site");
+	});
+
+	test("prefers the honest icon when it is the same size as the liar", async () => {
+		mockHome('<link rel="icon" href="/liar.png" sizes="192x192">');
+		reply("/liar.png", png(32, 32), PNG);
+		reply("/favicon.ico", ico([32, 32]), ICO);
+
+		expect((await getIcon(DOMAIN, OPTS))?.contentType).toBe("image/x-icon");
+	});
+
+	test("returns the biggest liar when no candidate is honest", async () => {
+		mockHome(
+			'<link rel="icon" href="/a.png" sizes="192x192">' +
+				'<link rel="icon" href="/b.png" sizes="180x180">' +
+				'<link rel="icon" href="/c.png" sizes="160x160">',
+		);
+		reply("/a.png", png(48, 48), PNG);
+		reply("/b.png", png(64, 64), PNG);
+		reply("/c.png", png(40, 40), PNG);
+		mockPath("/favicon.ico", 404);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(sizeOf(icon)).toBe(64);
+		expect(icon?.source).toBe("site");
+	});
+
+	test("accepts an icon of unknown size after a liar", async () => {
+		mockHome(
+			'<link rel="icon" href="/liar.png" sizes="192x192">' +
+				'<link rel="icon" href="/unknown.png" sizes="180x180">',
+		);
+		reply("/liar.png", png(32, 32), PNG);
+		mockPath("/unknown.png", 200, "PNGDATA", PNG);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(sizeOf(icon)).toBeNull();
+		expect(new Uint8Array(icon?.body ?? new ArrayBuffer(0))).toEqual(
+			enc("PNGDATA"),
+		);
+	});
+
+	test("stops at an icon exactly as big as it claims", async () => {
+		mockHome(
+			'<link rel="icon" href="/exact.png" sizes="64x64">' +
+				'<link rel="icon" href="/next.png" sizes="32x32">',
+		);
+		reply("/exact.png", png(64, 64), PNG);
+
+		// /next.png has no interceptor: fetching it would fail and mark the
+		// lookup transient, so the trace proves it was never requested.
+		const trace: FetchTrace = { transient: false };
+		expect(sizeOf(await getIcon(DOMAIN, OPTS, trace))).toBe(64);
+		expect(trace.transient).toBe(false);
+	});
+
+	test("does not treat an undeclared size as a lie", async () => {
+		mockHome('<link rel="icon" href="/plain.png">');
+		reply("/plain.png", png(16, 16), PNG);
+
+		expect(sizeOf(await getIcon(DOMAIN, OPTS))).toBe(16);
 	});
 });
 

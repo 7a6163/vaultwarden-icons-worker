@@ -13,6 +13,7 @@ import {
 	parseMime,
 	sniffImageType,
 } from "./sanitize";
+import { imageSize } from "./dimensions";
 import { isPublicHostname, type ParsedDomain } from "./ssrf";
 import { sanitizeSvg } from "./svg";
 
@@ -33,6 +34,14 @@ export interface IconFetchOptions {
 interface IconBytes {
 	readonly body: ArrayBuffer;
 	readonly contentType: string;
+	/** Longest pixel edge read from the header; null when unknown (or SVG). */
+	readonly size: number | null;
+}
+
+interface DiscoveredUrl {
+	readonly url: string;
+	/** Size the page declared in `sizes` (0 when absent, -1 for mask-icon). */
+	readonly size: number;
 }
 
 export interface IconResult extends IconBytes {
@@ -316,7 +325,7 @@ function resolveBase(base: string | null, pageUrl: string): string {
 async function discoverCandidateUrls(
 	domain: ParsedDomain,
 	lookup: Lookup,
-): Promise<string[]> {
+): Promise<DiscoveredUrl[]> {
 	let page: Fetched;
 	try {
 		page = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, lookup);
@@ -337,10 +346,15 @@ async function discoverCandidateUrls(
 	const baseUrl = resolveBase(base, page.url);
 	return links
 		.toSorted((a, b) => b.size - a.size)
-		.map((candidate) =>
-			toFetchableUrl(candidate.href, baseUrl, lookup.options.blockedSuffixes),
-		)
-		.filter((url): url is string => url !== null);
+		.map((candidate) => ({
+			url: toFetchableUrl(
+				candidate.href,
+				baseUrl,
+				lookup.options.blockedSuffixes,
+			),
+			size: candidate.size,
+		}))
+		.filter((found): found is DiscoveredUrl => found.url !== null);
 }
 
 async function fetchIcon(
@@ -386,11 +400,13 @@ async function fetchIcon(
 		return {
 			body: cleaned.buffer as ArrayBuffer,
 			contentType: "image/svg+xml",
+			size: null,
 		};
 	}
 
-	const type = mustSniff ? sniffImageType(new Uint8Array(body)) : mime;
-	return type ? { body, contentType: type } : null;
+	const bytes = new Uint8Array(body);
+	const type = mustSniff ? sniffImageType(bytes) : mime;
+	return type ? { body, contentType: type, size: imageSize(bytes) } : null;
 }
 
 /**
@@ -408,18 +424,40 @@ export async function getIcon(
 		trace,
 		deadline: AbortSignal.timeout(options.timeoutMs * LOOKUP_BUDGET_TIMEOUTS),
 	};
-	const discovered = await discoverCandidateUrls(domain, lookup);
-	// Cap the declared links but always leave a slot for /favicon.ico.
-	const ordered = new Set([
-		...[...new Set(discovered)].slice(0, MAX_CANDIDATES),
-		`${domain.origin}/favicon.ico`,
-	]);
-
-	for (const url of ordered) {
-		const icon = await fetchIcon(url, lookup);
-		if (icon) {
-			return { ...icon, source: "site" };
+	// url -> declared size, deduped (first, i.e. largest, wins) and capped,
+	// always leaving a slot for /favicon.ico.
+	const declared = new Map<string, number>();
+	for (const { url, size } of await discoverCandidateUrls(domain, lookup)) {
+		if (!declared.has(url)) {
+			declared.set(url, size);
 		}
+	}
+	const ordered = new Map([...declared].slice(0, MAX_CANDIDATES));
+	const favicon = `${domain.origin}/favicon.ico`;
+	if (!ordered.has(favicon)) {
+		ordered.set(favicon, 0);
+	}
+
+	// An icon smaller than its declared size lied about it (e.g. a 32px file
+	// tagged sizes="192x192"): keep the biggest such icon and look for an
+	// honest one, returning whichever is larger.
+	let best: (IconBytes & { readonly size: number }) | null = null;
+	for (const [url, size] of ordered) {
+		const icon = await fetchIcon(url, lookup);
+		if (!icon) {
+			continue;
+		}
+		if (icon.size === null || icon.size >= size) {
+			const winner =
+				best !== null && best.size > (icon.size ?? Infinity) ? best : icon;
+			return { ...winner, source: "site" };
+		}
+		if (best === null || icon.size > best.size) {
+			best = { ...icon, size: icon.size };
+		}
+	}
+	if (best !== null) {
+		return { ...best, source: "site" };
 	}
 
 	// Own discovery failed: optionally fall back to an operator-configured
