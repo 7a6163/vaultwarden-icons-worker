@@ -51,6 +51,22 @@ describe("resolveConfig", () => {
 		expect(config.cacheTtl).toBe(604_800);
 	});
 
+	test("floors fractional values and rejects ones that floor to zero", () => {
+		const config = resolveConfig({
+			MAX_ICON_BYTES: "0.9",
+			FETCH_TIMEOUT_MS: "2.7",
+			CACHE_TTL_SECONDS: "1",
+		});
+		expect(config.maxBytes).toBe(524_288);
+		expect(config.timeoutMs).toBe(2);
+		expect(config.cacheTtl).toBe(1);
+	});
+
+	test("caps the transient-miss TTL at five minutes, or the negative TTL", () => {
+		expect(resolveConfig({}).transientTtl).toBe(300);
+		expect(resolveConfig({ CACHE_TTL_SECONDS: "60" }).transientTtl).toBe(60);
+	});
+
 	test("clamps the negative TTL to one day, or to a shorter cache TTL", () => {
 		expect(resolveConfig({}).negativeTtl).toBe(86_400);
 		expect(resolveConfig({ CACHE_TTL_SECONDS: "60" }).negativeTtl).toBe(60);

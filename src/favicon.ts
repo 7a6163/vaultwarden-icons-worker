@@ -7,7 +7,12 @@
  * content checks before its bytes are returned. No third party is involved.
  */
 
-import { isAllowedImageType, parseMime } from "./sanitize";
+import {
+	isAllowedImageType,
+	isGenericType,
+	parseMime,
+	sniffImageType,
+} from "./sanitize";
 import { isPublicHostname, type ParsedDomain } from "./ssrf";
 import { sanitizeSvg } from "./svg";
 
@@ -21,16 +26,51 @@ export interface IconFetchOptions {
 	 * Fetched server-side only when own discovery fails. Null/undefined disables it.
 	 */
 	readonly fallbackUrl?: string | null;
+	/** Operator-blocked hostname suffixes, enforced on every outbound URL and redirect hop. */
+	readonly blockedSuffixes?: readonly string[];
 }
 
-export interface IconResult {
+interface IconBytes {
 	readonly body: ArrayBuffer;
 	readonly contentType: string;
+}
+
+export interface IconResult extends IconBytes {
+	/** Whether the icon came from the site itself or the third-party fallback. */
+	readonly source: "site" | "fallback";
+}
+
+/**
+ * Filled in by getIcon: whether any upstream failure looked transient (network
+ * error, timeout, 5xx, 429), so a miss can be cached briefly instead of for a day.
+ */
+export interface FetchTrace {
+	transient: boolean;
 }
 
 interface IconCandidate {
 	readonly href: string;
 	readonly size: number;
+}
+
+export interface IconLinks {
+	/** The first `<base href>`, if the page declared one. */
+	readonly base: string | null;
+	readonly links: IconCandidate[];
+}
+
+/** Per-lookup state shared by every outbound request. */
+interface Lookup {
+	readonly options: IconFetchOptions;
+	readonly trace: FetchTrace;
+	/** Aborts every outbound request once the whole lookup's time budget is spent. */
+	readonly deadline: AbortSignal;
+}
+
+interface Fetched {
+	readonly response: Response;
+	/** Final URL after redirects; relative hrefs resolve against it. */
+	readonly url: string;
 }
 
 const ICON_RELS: ReadonlySet<string> = new Set([
@@ -54,16 +94,62 @@ const MAX_CANDIDATES = 5;
 /** Max <link> icon candidates to collect from a page (bounds memory on hostile HTML). */
 const MAX_DISCOVERED_LINKS = 50;
 
-function timedFetch(
+/** Max homepage bytes fed to the HTML parser (icon links live in <head>). */
+const MAX_HTML_BYTES = 1_048_576;
+
+/** Max redirect hops followed per outbound request. */
+const MAX_REDIRECTS = 5;
+
+/** Whole-lookup time budget, in multiples of the per-request timeout. */
+const LOOKUP_BUDGET_TIMEOUTS = 2;
+
+/**
+ * Fetch with a single timeout across all hops (and the lookup's overall
+ * deadline). Redirects are followed manually so every Location is re-validated
+ * against the SSRF guard — `redirect: "follow"` would let a public site bounce
+ * the Worker to a blocked or internal host. Throws when a redirect is refused,
+ * the hop limit is exceeded, or the request fails.
+ */
+async function timedFetch(
 	url: string,
 	accept: string,
-	timeoutMs: number,
-): Promise<Response> {
-	return fetch(url, {
-		redirect: "follow",
-		signal: AbortSignal.timeout(timeoutMs),
-		headers: { "user-agent": USER_AGENT, accept },
-	});
+	lookup: Lookup,
+): Promise<Fetched> {
+	const signal = AbortSignal.any([
+		AbortSignal.timeout(lookup.options.timeoutMs),
+		lookup.deadline,
+	]);
+	let current = url;
+	for (let hop = 0; ; hop += 1) {
+		let response: Response;
+		try {
+			response = await fetch(current, {
+				redirect: "manual",
+				signal,
+				headers: { "user-agent": USER_AGENT, accept },
+			});
+		} catch (error) {
+			lookup.trace.transient = true;
+			throw error;
+		}
+		if (response.status >= 500 || response.status === 429) {
+			lookup.trace.transient = true;
+		}
+		const location = response.headers.get("location");
+		if (response.status < 300 || response.status >= 400 || !location) {
+			return { response, url: current };
+		}
+		await drain(response);
+		const next = toFetchableUrl(
+			location,
+			current,
+			lookup.options.blockedSuffixes,
+		);
+		if (!next || hop >= MAX_REDIRECTS) {
+			throw new Error("redirect refused");
+		}
+		current = next;
+	}
 }
 
 async function drain(response: Response): Promise<void> {
@@ -115,71 +201,129 @@ export async function readCapped(
 	return out.buffer;
 }
 
+/** Largest edge across every `WxH` in a `sizes` attribute; 0 for "any" or junk. */
 function parseSize(sizes: string | null): number {
-	if (!sizes) {
-		return 0;
+	let largest = 0;
+	for (const match of (sizes ?? "").matchAll(/(\d+)x(\d+)/gi)) {
+		largest = Math.max(largest, Number(match[1]), Number(match[2]));
 	}
-	const match = /(\d+)/.exec(sizes);
-	return match ? Number(match[1]) : 0;
+	return largest;
 }
 
-/** Resolve a discovered href to an absolute, fetchable, public http(s) URL — or null. */
-function toFetchableUrl(href: string, origin: string): string | null {
+/** Resolve an href or Location to an absolute, fetchable, public http(s) URL — or null. */
+function toFetchableUrl(
+	href: string,
+	base: string,
+	blockedSuffixes?: readonly string[],
+): string | null {
 	let url: URL;
 	try {
-		url = new URL(href, origin);
+		url = new URL(href, base);
 	} catch {
 		return null;
 	}
 	if (url.protocol !== "https:" && url.protocol !== "http:") {
 		return null;
 	}
-	if (!isPublicHostname(url.hostname)) {
+	if (!isPublicHostname(url.hostname, blockedSuffixes)) {
 		return null;
 	}
 	return url.toString();
 }
 
-/** Extract icon `<link>` candidates from an HTML response; [] if it can't be read. */
+/**
+ * Extract icon `<link>` candidates (and any `<base href>`) from an HTML
+ * response. Parsing stops at `<body>` or after MAX_HTML_BYTES, so a huge or
+ * endless page cannot exhaust memory. Returns no links if the body can't be read.
+ */
 export async function collectIconLinks(
 	htmlResponse: Response,
-): Promise<IconCandidate[]> {
+): Promise<IconLinks> {
 	const candidates: IconCandidate[] = [];
-	const rewriter = new HTMLRewriter().on("link", {
-		element(el) {
-			const rel = (el.getAttribute("rel") ?? "").toLowerCase();
-			const isIcon = rel.split(/\s+/).some((token) => ICON_RELS.has(token));
-			if (!isIcon) {
-				return;
-			}
-			const href = el.getAttribute("href");
-			if (href && candidates.length < MAX_DISCOVERED_LINKS) {
-				candidates.push({ href, size: parseSize(el.getAttribute("sizes")) });
-			}
-		},
-	});
+	let base: string | null = null;
+	let reachedBody = false;
+	const rewriter = new HTMLRewriter()
+		.on("body", {
+			element() {
+				reachedBody = true;
+			},
+		})
+		.on("base", {
+			element(el) {
+				base ??= el.getAttribute("href");
+			},
+		})
+		.on("link", {
+			element(el) {
+				const tokens = (el.getAttribute("rel") ?? "")
+					.toLowerCase()
+					.split(/\s+/);
+				if (!tokens.some((token) => ICON_RELS.has(token))) {
+					return;
+				}
+				const href = el.getAttribute("href");
+				if (href && candidates.length < MAX_DISCOVERED_LINKS) {
+					// mask-icon is Safari's single-colour pinned-tab glyph: a last resort.
+					const size = tokens.includes("mask-icon")
+						? -1
+						: parseSize(el.getAttribute("sizes"));
+					candidates.push({ href, size });
+				}
+			},
+		});
 
 	try {
-		// Consuming the transformed body drives the rewriter to completion.
-		await rewriter.transform(htmlResponse).arrayBuffer();
+		// Consuming the transformed body is what drives the rewriter.
+		const body = rewriter.transform(htmlResponse).body;
+		if (!body) {
+			return { base, links: candidates };
+		}
+		const reader = body.getReader();
+		let total = 0;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			total += value.byteLength;
+			// Just stop pulling: backpressure halts the upstream read, and the
+			// connection closes with the request. Cancelling the rewriter's output
+			// instead leaves an unhandled "Stream was cancelled" in the runtime.
+			if (reachedBody || total > MAX_HTML_BYTES) {
+				break;
+			}
+		}
 	} catch {
 		// Unreadable body: degrade to /favicon.ico rather than failing the request.
 		await drain(htmlResponse);
-		return [];
+		return { base: null, links: [] };
 	}
-	return candidates;
+	return { base, links: candidates };
+}
+
+/** Resolve a `<base href>` against the page URL; an unusable one is ignored. */
+function resolveBase(base: string | null, pageUrl: string): string {
+	if (!base) {
+		return pageUrl;
+	}
+	try {
+		return new URL(base, pageUrl).toString();
+	} catch {
+		return pageUrl;
+	}
 }
 
 async function discoverCandidateUrls(
 	domain: ParsedDomain,
-	timeoutMs: number,
+	lookup: Lookup,
 ): Promise<string[]> {
-	let html: Response;
+	let page: Fetched;
 	try {
-		html = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, timeoutMs);
+		page = await timedFetch(`${domain.origin}/`, ACCEPT_HTML, lookup);
 	} catch {
 		return [];
 	}
+	const html = page.response;
 
 	const contentType = html.headers.get("content-type") ?? "";
 	if (!html.ok || !contentType.includes("html")) {
@@ -187,20 +331,26 @@ async function discoverCandidateUrls(
 		return [];
 	}
 
-	const links = await collectIconLinks(html);
+	// Relative hrefs resolve against the final page URL (after redirects) or
+	// the page's <base href>, as a browser would.
+	const { base, links } = await collectIconLinks(html);
+	const baseUrl = resolveBase(base, page.url);
 	return links
 		.toSorted((a, b) => b.size - a.size)
-		.map((candidate) => toFetchableUrl(candidate.href, domain.origin))
+		.map((candidate) =>
+			toFetchableUrl(candidate.href, baseUrl, lookup.options.blockedSuffixes),
+		)
 		.filter((url): url is string => url !== null);
 }
 
 async function fetchIcon(
 	url: string,
-	options: IconFetchOptions,
-): Promise<IconResult | null> {
+	lookup: Lookup,
+): Promise<IconBytes | null> {
+	const { options } = lookup;
 	let response: Response;
 	try {
-		response = await timedFetch(url, ACCEPT_IMAGE, options.timeoutMs);
+		({ response } = await timedFetch(url, ACCEPT_IMAGE, lookup));
 	} catch {
 		return null;
 	}
@@ -208,7 +358,11 @@ async function fetchIcon(
 	const contentType = response.headers.get("content-type");
 	const mime = parseMime(contentType);
 	const isSvg = mime === "image/svg+xml";
-	if (!response.ok || (!isAllowedImageType(contentType) && !isSvg)) {
+	const mustSniff = isGenericType(mime);
+	if (
+		!response.ok ||
+		(!isAllowedImageType(contentType) && !isSvg && !mustSniff)
+	) {
 		await drain(response);
 		return null;
 	}
@@ -235,33 +389,36 @@ async function fetchIcon(
 		};
 	}
 
-	return { body, contentType: mime };
+	const type = mustSniff ? sniffImageType(new Uint8Array(body)) : mime;
+	return type ? { body, contentType: type } : null;
 }
 
 /**
  * Resolve and return the best available favicon for a domain, or null if none
- * could be retrieved. Tries declared `<link>` icons (largest first) then
- * `/favicon.ico`.
+ * could be retrieved. Tries declared `<link>` icons (largest first, at most
+ * MAX_CANDIDATES) then `/favicon.ico`. The whole lookup shares a time budget.
  */
 export async function getIcon(
 	domain: ParsedDomain,
 	options: IconFetchOptions,
+	trace: FetchTrace = { transient: false },
 ): Promise<IconResult | null> {
-	const discovered = await discoverCandidateUrls(domain, options.timeoutMs);
-	const ordered = [...discovered, `${domain.origin}/favicon.ico`];
+	const lookup: Lookup = {
+		options,
+		trace,
+		deadline: AbortSignal.timeout(options.timeoutMs * LOOKUP_BUDGET_TIMEOUTS),
+	};
+	const discovered = await discoverCandidateUrls(domain, lookup);
+	// Cap the declared links but always leave a slot for /favicon.ico.
+	const ordered = new Set([
+		...[...new Set(discovered)].slice(0, MAX_CANDIDATES),
+		`${domain.origin}/favicon.ico`,
+	]);
 
-	const seen = new Set<string>();
-	let attempts = 0;
 	for (const url of ordered) {
-		if (seen.has(url) || attempts >= MAX_CANDIDATES + 1) {
-			continue;
-		}
-		seen.add(url);
-		attempts += 1;
-
-		const icon = await fetchIcon(url, options);
+		const icon = await fetchIcon(url, lookup);
 		if (icon) {
-			return icon;
+			return { ...icon, source: "site" };
 		}
 	}
 
@@ -272,9 +429,9 @@ export async function getIcon(
 			"{}",
 			encodeURIComponent(domain.host),
 		);
-		const icon = await fetchIcon(fallback, options);
+		const icon = await fetchIcon(fallback, lookup);
 		if (icon) {
-			return icon;
+			return { ...icon, source: "fallback" };
 		}
 	}
 

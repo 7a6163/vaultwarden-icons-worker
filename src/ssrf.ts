@@ -26,6 +26,9 @@ const RESERVED_TLDS: ReadonlySet<string> = new Set([
 	"test",
 	"example",
 	"invalid",
+	"arpa",
+	"alt",
+	"onion",
 ]);
 
 /** Loose hostname shape: labels plus an optional :port. Rejects schemes, spaces, slashes. */

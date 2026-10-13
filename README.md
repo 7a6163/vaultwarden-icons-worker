@@ -59,14 +59,18 @@ For a request to `/<domain>` the Worker:
    size, then falls back to `/favicon.ico`. Every discovered href is re-validated
    against the SSRF guard before it is fetched.
 3. **Validates the response** (`src/sanitize.ts`) — raster image types are served
-   as-is. **SVG is sanitized** with [`svg-hush`](https://crates.io/crates/svg-hush)
+   as-is; a generic `Content-Type` (`application/octet-stream`, `text/plain`, none)
+   is accepted only when the leading bytes are a known image format. **SVG is sanitized** with [`svg-hush`](https://crates.io/crates/svg-hush)
    compiled to WASM (`svg-sanitizer/`) — the same allowlist sanitizer Vaultwarden
    uses internally — then served behind a strict `Content-Security-Policy` sandbox.
-   A byte cap and per-request timeout are enforced.
+   A byte cap, a per-request timeout and an overall lookup budget (2× the timeout)
+   are enforced.
 4. **Caches** at the edge (Cloudflare Cache API) and returns the bytes with
    `Cache-Control`. When no icon can be found (or the host is rejected) it returns
    a cacheable **404** so each client renders its own built-in placeholder, rather
-   than serving a foreign or blank image.
+   than serving a foreign or blank image. A miss caused by a timeout, network
+   error, 5xx or 429 is cached for only 5 minutes. The `x-icon-result` header
+   reports `miss`, `hit`, `fallback` or `none`.
 
 ## Deploy
 
@@ -74,7 +78,8 @@ For a request to `/<domain>` the Worker:
 npm install
 npx wrangler login
 
-# (optional) bind a custom domain in wrangler.jsonc:
+# bind a custom domain in wrangler.jsonc (the Cache API is a no-op on
+# *.workers.dev, so without one nothing is cached at the edge):
 #   "routes": [{ "pattern": "vaultwarden-icons.example.com", "custom_domain": true }]
 
 npm run deploy
@@ -127,7 +132,7 @@ npm run lint       # oxlint     (npm run format = oxfmt)
   directly with `createExecutionContext()`, which works with `fetchMock`.
 - Coverage is enforced at 100% (statements, branches, functions, lines) by
   `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
-- Mutation testing (`npm run test:mutation`) currently kills 447/447 mutants.
+- Mutation testing (`npm run test:mutation`) currently kills or times out 591/591 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
   active mutant is handed to workerd by `test/stryker-setup.ts`. It is not part
@@ -136,8 +141,11 @@ npm run lint       # oxlint     (npm run format = oxfmt)
 ## Security
 
 - **SSRF**: only public, name-based http(s) hosts are fetched; IP literals and
-  internal/reserved names are refused at request entry and again for every
-  discovered icon href.
+  internal/reserved names (and `BLOCKED_SUFFIXES`) are refused at request entry,
+  for every discovered icon href, and for every redirect hop (redirects are
+  followed manually, at most 5).
+- **Caching**: the edge cache is keyed on the normalized host, so path variants
+  (`/GitHub.com`, `/github.com/<junk>`) cannot bypass it.
 - **SVG**: sanitized with `svg-hush` (WASM) to strip scripts and external refs,
   then served behind a `default-src 'none'; sandbox` CSP — defense in depth.
 - **Abuse**: the endpoint is public (clients reach it via a redirect, so it cannot
