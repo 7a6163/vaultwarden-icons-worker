@@ -6,7 +6,7 @@ import {
 	getIcon,
 	readCapped,
 } from "../src/favicon";
-import { ico, png } from "./images";
+import { gif, ico, png } from "./images";
 
 const OPTS = { maxBytes: 524_288, timeoutMs: 5_000 };
 const DOMAIN = { host: "example.com", origin: "https://example.com" };
@@ -102,8 +102,9 @@ describe("getIcon", () => {
 	});
 
 	test("never fetches an icon href that resolves to a private host", async () => {
-		// Only the HTML and favicon.ico are registered. If the code tried to fetch
-		// the internal href, disableNetConnect would throw and fail the test.
+		// Only the HTML and favicon.ico are registered. Fetching the internal
+		// href would throw on disableNetConnect; getIcon swallows that, but it
+		// flags the trace as transient.
 		fetchMock
 			.get("https://example.com")
 			.intercept({ path: "/" })
@@ -114,9 +115,11 @@ describe("getIcon", () => {
 			.get("https://example.com")
 			.intercept({ path: "/favicon.ico" })
 			.reply(200, "ICO", { headers: { "content-type": "image/x-icon" } });
+		const trace = { transient: false };
 
-		const icon = await getIcon(DOMAIN, OPTS);
+		const icon = await getIcon(DOMAIN, OPTS, trace);
 		expect(icon?.contentType).toBe("image/x-icon");
+		expect(trace.transient).toBe(false);
 	});
 
 	test("rejects icons larger than the byte cap", async () => {
@@ -516,9 +519,12 @@ describe("candidate ranking", () => {
 				'<link rel="icon" href="/b.png" sizes="16X48">',
 		);
 		mockPath("/b.png", 200, "B", { "content-type": "image/png" });
+		const trace = { transient: false };
 
-		const icon = await getIcon(DOMAIN, OPTS);
+		const icon = await getIcon(DOMAIN, OPTS, trace);
 		expect(new Uint8Array(icon?.body ?? new ArrayBuffer(0))).toEqual(enc("B"));
+		// /a.png is unmocked: trying it first would fail and flag the trace.
+		expect(trace.transient).toBe(false);
 	});
 
 	test("tries a mask-icon only after unsized icons", async () => {
@@ -544,9 +550,40 @@ describe("candidate ranking", () => {
 			mockPath(`/i${i}.png`, 404);
 		}
 		mockPath("/favicon.ico", 200, "ICO", { "content-type": "image/x-icon" });
+		const trace = { transient: false };
+
+		const icon = await getIcon(DOMAIN, OPTS, trace);
+		expect(icon?.contentType).toBe("image/x-icon");
+		// Trying /i5.png or /i6.png (unmocked) would throw and flag the trace.
+		expect(trace.transient).toBe(false);
+	});
+});
+
+describe("icon selection", () => {
+	test("tries an SVG before a large raster icon", async () => {
+		mockHome(
+			'<link rel="icon" href="/big.png" sizes="512x512">' +
+				'<link rel="icon" href="/logo.svg">',
+		);
+		reply(
+			"/logo.svg",
+			enc('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'),
+			{ "content-type": "image/svg+xml" },
+		);
 
 		const icon = await getIcon(DOMAIN, OPTS);
-		expect(icon?.contentType).toBe("image/x-icon");
+		expect(icon?.contentType).toBe("image/svg+xml");
+	});
+
+	test("moves on when a link declared scalable serves a raster", async () => {
+		mockHome(
+			'<link rel="icon" href="/fake.png" sizes="any">' +
+				'<link rel="apple-touch-icon" href="/touch.png">',
+		);
+		reply("/fake.png", png(32, 32), PNG);
+		reply("/touch.png", png(180, 180), PNG);
+
+		expect(sizeOf(await getIcon(DOMAIN, OPTS))).toBe(180);
 	});
 });
 
@@ -791,6 +828,19 @@ describe("declared vs real size", () => {
 		expect(icon?.source).toBe("site");
 	});
 
+	test("keeps the higher-ranked liar when two are the same real size", async () => {
+		mockHome(
+			'<link rel="icon" href="/a.png" sizes="192x192">' +
+				'<link rel="icon" href="/b.gif" sizes="180x180">',
+		);
+		reply("/a.png", png(32, 32), PNG);
+		reply("/b.gif", gif(32, 32), { "content-type": "image/gif" });
+		mockPath("/favicon.ico", 404);
+
+		const icon = await getIcon(DOMAIN, OPTS);
+		expect(icon?.contentType).toBe("image/png");
+	});
+
 	test("accepts an icon of unknown size after a liar", async () => {
 		mockHome(
 			'<link rel="icon" href="/liar.png" sizes="192x192">' +
@@ -899,8 +949,11 @@ describe("redirects", () => {
 			.intercept({ path: "/loop" })
 			.reply(302, "", { headers: { location: "/loop" } })
 			.times(5);
+		const trace = { transient: false };
 
-		expect(await getIcon(DOMAIN, OPTS)).toBeNull();
+		expect(await getIcon(DOMAIN, OPTS, trace)).toBeNull();
+		// A sixth, unmocked hop would throw and flag the trace.
+		expect(trace.transient).toBe(false);
 	});
 
 	test("tries /favicon.ico on the host the homepage redirected to", async () => {
@@ -1025,6 +1078,42 @@ describe("collectIconLinks", () => {
 		]);
 	});
 
+	test("ranks scalable icons first and unsized apple-touch-icons at 180", async () => {
+		const html = [
+			'<link rel="icon" href="/plain.png">',
+			'<link rel="icon" href="/typed" type="IMAGE/SVG+XML">',
+			'<link rel="icon" href="/any.png" sizes="16x16 ANY">',
+			'<link rel="icon" href="/a.SVG">',
+			'<link rel="icon" href="/q.svg?v=2">',
+			'<link rel="icon" href="/h.svg#i">',
+			'<link rel="icon" href="/not.svgz">',
+			'<link rel="icon" href="/svg.png">',
+			'<link rel="icon" href="/anything.png" sizes="many">',
+			'<link rel="apple-touch-icon" href="/touch.png">',
+			'<link rel="apple-touch-icon-precomposed" href="/pre.png" sizes="x">',
+			'<link rel="apple-touch-icon" href="/touch57.png" sizes="57x57">',
+			'<link rel="mask-icon" href="/pin.svg" type="image/svg+xml">',
+		].join("");
+
+		const { links } = await collectIconLinks(new Response(html));
+		const scalable = Number.MAX_SAFE_INTEGER;
+		expect(links.map((link) => [link.href, link.size])).toEqual([
+			["/plain.png", 0],
+			["/typed", scalable],
+			["/any.png", scalable],
+			["/a.SVG", scalable],
+			["/q.svg?v=2", scalable],
+			["/h.svg#i", scalable],
+			["/not.svgz", 0],
+			["/svg.png", 0],
+			["/anything.png", 0],
+			["/touch.png", 180],
+			["/pre.png", 180],
+			["/touch57.png", 57],
+			["/pin.svg", -1],
+		]);
+	});
+
 	test("stops reading at <body> instead of consuming the whole page", async () => {
 		// The stream never closes: reading to the end would hang the test.
 		const stream = new ReadableStream({
@@ -1037,6 +1126,17 @@ describe("collectIconLinks", () => {
 		});
 		const { links } = await collectIconLinks(new Response(stream));
 		expect(links.map((link) => link.href)).toEqual(["/a.png"]);
+	});
+
+	test("keeps reading past <body> when <head> had no icon", async () => {
+		// Next.js streaming metadata emits the icon link deep inside <body>.
+		const html =
+			"<html><head><title>t</title></head><body>" +
+			`<div>${"x".repeat(100_000)}</div>` +
+			'<link rel="icon" href="/streamed.svg"></body></html>';
+
+		const { links } = await collectIconLinks(new Response(html));
+		expect(links.map((link) => link.href)).toEqual(["/streamed.svg"]);
 	});
 
 	test("stops reading after the HTML byte cap", async () => {

@@ -55,15 +55,11 @@ For a request to `/<domain>` the Worker:
    single-label and reserved-TLD names (`.local`, `.internal`, …), and any
    operator-configured blocked suffixes. The Worker is public, so it re-validates
    every host independently of Vaultwarden.
-2. **Discovers candidates** (`src/favicon.ts`) — fetches the site HTML and uses
+2. **Discovers candidates** (`src/favicon.ts`) — fetches the site HTML, uses
    [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/)
-   to extract `<link rel="icon">` / `apple-touch-icon` hrefs, ordered by declared
-   size, then falls back to `/favicon.ico` (and, when the homepage redirects to
-   another host such as a login or shop page, that host's `/favicon.ico`). Real dimensions are read from each
-   image header (PNG, GIF, ICO, WebP); an icon smaller than its declared `sizes`
-   (e.g. a 32×32 file tagged `192x192`) is set aside while the next candidate is
-   tried, and the larger of the two wins. Every discovered href is re-validated
-   against the SSRF guard before it is fetched.
+   to extract `<link rel="icon">` / `apple-touch-icon` hrefs, and tries them in
+   the order described under [Icon selection](#icon-selection). Every
+   discovered href is re-validated against the SSRF guard before it is fetched.
 3. **Validates the response** (`src/sanitize.ts`) — raster image types are served
    as-is; a generic `Content-Type` (`application/octet-stream`, `text/plain`, none)
    is accepted only when the leading bytes are a known image format. **SVG is sanitized** with [`svg-hush`](https://crates.io/crates/svg-hush)
@@ -77,6 +73,44 @@ For a request to `/<domain>` the Worker:
    than serving a foreign or blank image. A miss caused by a timeout, network
    error, 5xx or 429 is cached for only 5 minutes. The `x-icon-result` header
    reports `miss`, `hit`, `fallback` or `none`.
+
+## Icon selection
+
+There is no standard order: HTML lets a page declare several icons and leaves
+the choice to the browser. The Worker aims for the sharpest icon, since a small
+one looks blurry when scaled up.
+
+1. **Collect `<link>` icons** from the homepage: `rel` of `icon`, `shortcut`,
+   `apple-touch-icon`, `apple-touch-icon-precomposed`, `fluid-icon` or
+   `mask-icon` (at most 50). Parsing stops at `<body>` once an icon has been
+   found. Otherwise it keeps reading up to 1 MiB, because pages that stream
+   their metadata (Next.js) put the icon link inside `<body>`.
+2. **Rank each link** by how sharp it should render, best first:
+
+   | Rank | Link | Why |
+   | --- | --- | --- |
+   | 1 | SVG (`type` contains `svg`, `sizes="any"`, or an `.svg` href) | Vector, sharp at any size |
+   | 2 | Declared `sizes`, largest first (`"16x16 32x32 256x256"` counts as 256) | Explicit size |
+   | 3 | `apple-touch-icon` without `sizes`, treated as 180px | iOS home-screen convention |
+   | 4 | `icon` without `sizes` | Unknown, often 16 or 32px |
+   | 5 | `mask-icon` | Safari's single-colour pinned-tab glyph |
+
+   Duplicates are dropped and the top 5 are tried in order.
+3. **Check the real size.** Each raster's pixel size is read from its header
+   (PNG, GIF, ICO, WebP). An icon at least as large as its rank is returned
+   immediately. One smaller than claimed (e.g. Instagram's 32×32 file tagged
+   `sizes="192x192"`) is set aside while the next candidate is tried. The first
+   honest icon then wins unless a set-aside one is larger; if none is honest,
+   the largest set-aside icon is returned. SVGs and JPEGs have no size check.
+4. **`/favicon.ico`** on the requested host is always tried after the links.
+5. **The redirect target's `/favicon.ico`.** When the homepage redirects to
+   another host, such as a login or shop page (`tw.battle.net` →
+   `tw.shop.battle.net`), that host's `/favicon.ico` is tried as well.
+6. **The fallback service**, if `FALLBACK_ICON_SERVICE` is set, is fetched
+   server-side only when everything above failed.
+
+Not used: `manifest.json` icons (they would cost another request per lookup)
+and per-display-size targeting (the largest available icon is returned).
 
 ## Deploy
 
@@ -138,7 +172,7 @@ npm run lint       # oxlint     (npm run format = oxfmt)
   directly with `createExecutionContext()`, which works with `fetchMock`.
 - Coverage is enforced at 100% (statements, branches, functions, lines) by
   `vitest.config.ts`, and the lcov report is uploaded to Codecov from CI.
-- Mutation testing (`npm run test:mutation`) currently kills 705/705 mutants.
+- Mutation testing (`npm run test:mutation`) currently kills 744/744 mutants.
   It runs the whole suite per mutant via Stryker's command runner, because the
   vitest runner forces a thread pool that `vitest-pool-workers` cannot use; the
   active mutant is handed to workerd by `test/stryker-setup.ts`. It does not gate

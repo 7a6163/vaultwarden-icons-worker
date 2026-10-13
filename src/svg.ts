@@ -21,6 +21,7 @@ export function sanitizeSvg(input: Uint8Array): Uint8Array | null {
 	try {
 		if (!initialized) {
 			initSync({ module: wasmModule });
+			// Stryker disable next-line BooleanLiteral: initSync is itself idempotent, so this flag only skips a call.
 			initialized = true;
 		}
 		return sanitize_svg(input) ?? null;

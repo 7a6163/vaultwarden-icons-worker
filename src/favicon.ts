@@ -40,7 +40,7 @@ interface IconBytes {
 
 interface DiscoveredUrl {
 	readonly url: string;
-	/** Size the page declared in `sizes` (0 when absent, -1 for mask-icon). */
+	/** Rank from `rankLink`: declared size, SCALABLE_SIZE, 180 or 0, -1 for mask-icon. */
 	readonly size: number;
 }
 
@@ -97,6 +97,12 @@ const ICON_RELS: ReadonlySet<string> = new Set([
 	"fluid-icon",
 ]);
 
+/** Rank of a scalable (SVG or `sizes="any"`) icon: sharp at any size, so tried first. */
+const SCALABLE_SIZE = Number.MAX_SAFE_INTEGER;
+
+/** iOS's home-screen size: what an unsized apple-touch-icon almost always is. */
+const APPLE_TOUCH_ICON_SIZE = 180;
+
 const USER_AGENT =
 	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 const ACCEPT_IMAGE = "image/avif,image/webp,image/png,image/*;q=0.8,*/*;q=0.5";
@@ -109,7 +115,10 @@ const MAX_CANDIDATES = 5;
 /** Max <link> icon candidates to collect from a page (bounds memory on hostile HTML). */
 const MAX_DISCOVERED_LINKS = 50;
 
-/** Max homepage bytes fed to the HTML parser (icon links live in <head>). */
+/**
+ * Max homepage bytes fed to the HTML parser. Icon links normally live in
+ * <head>, but streamed pages (Next.js metadata streaming) emit them in <body>.
+ */
 const MAX_HTML_BYTES = 1_048_576;
 
 /** Max redirect hops followed per outbound request. */
@@ -218,11 +227,43 @@ export async function readCapped(
 
 /** Largest edge across every `WxH` in a `sizes` attribute; 0 for "any" or junk. */
 function parseSize(sizes: string | null): number {
+	if (sizes === null) {
+		return 0;
+	}
 	let largest = 0;
-	for (const match of (sizes ?? "").matchAll(/(\d+)x(\d+)/gi)) {
+	for (const match of sizes.matchAll(/(\d+)x(\d+)/gi)) {
 		largest = Math.max(largest, Number(match[1]), Number(match[2]));
 	}
 	return largest;
+}
+
+/**
+ * Rank a `<link>` by how sharp it should render (see "Icon selection" in the
+ * README): mask-icon last, scalable first, else the declared size, with an
+ * unsized apple-touch-icon assumed to be 180px. getIcon checks the real size.
+ */
+function rankLink(
+	el: Element,
+	tokens: readonly string[],
+	href: string,
+): number {
+	if (tokens.includes("mask-icon")) {
+		// Safari's single-colour pinned-tab glyph: a last resort.
+		return -1;
+	}
+	const sizes = el.getAttribute("sizes");
+	if (
+		(el.getAttribute("type") ?? "").toLowerCase().includes("svg") ||
+		(sizes ?? "").toLowerCase().split(/\s+/).includes("any") ||
+		/\.svg(?:[?#]|$)/i.test(href)
+	) {
+		return SCALABLE_SIZE;
+	}
+	const size = parseSize(sizes);
+	if (size === 0 && tokens.some((token) => token.startsWith("apple-touch"))) {
+		return APPLE_TOUCH_ICON_SIZE;
+	}
+	return size;
 }
 
 /** Resolve an href or Location to an absolute, fetchable, public http(s) URL — or null. */
@@ -278,11 +319,7 @@ export async function collectIconLinks(
 				}
 				const href = el.getAttribute("href");
 				if (href && candidates.length < MAX_DISCOVERED_LINKS) {
-					// mask-icon is Safari's single-colour pinned-tab glyph: a last resort.
-					const size = tokens.includes("mask-icon")
-						? -1
-						: parseSize(el.getAttribute("sizes"));
-					candidates.push({ href, size });
+					candidates.push({ href, size: rankLink(el, tokens, href) });
 				}
 			},
 		});
@@ -304,7 +341,9 @@ export async function collectIconLinks(
 			// Just stop pulling: backpressure halts the upstream read, and the
 			// connection closes with the request. Cancelling the rewriter's output
 			// instead leaves an unhandled "Stream was cancelled" in the runtime.
-			if (reachedBody || total > MAX_HTML_BYTES) {
+			// With no icon in <head>, keep scanning: streamed pages (Next.js
+			// streaming metadata, e.g. immersivetranslate.com) put it in <body>.
+			if ((reachedBody && candidates.length > 0) || total > MAX_HTML_BYTES) {
 				break;
 			}
 		}
