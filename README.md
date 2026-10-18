@@ -97,11 +97,14 @@ one looks blurry when scaled up.
 
    Duplicates are dropped and the top 5 are tried in order.
 3. **Check the real size.** Each raster's pixel size is read from its header
-   (PNG, GIF, ICO, WebP). An icon at least as large as its rank is returned
-   immediately. One smaller than claimed (e.g. Instagram's 32×32 file tagged
-   `sizes="192x192"`) is set aside while the next candidate is tried. The first
-   honest icon then wins unless a set-aside one is larger; if none is honest,
-   the largest set-aside icon is returned. SVGs and JPEGs have no size check.
+   (PNG, GIF, ICO, WebP). An icon at least as large as its rank **and** at
+   least 64px is returned immediately (Bitwarden clients draw icons at
+   24–36px, so smaller ones blur on 2× screens). Any other icon, such as one
+   smaller than claimed (e.g. Instagram's 32×32 file tagged `sizes="192x192"`)
+   or an unsized 16px favicon, is set aside while the next candidate is tried.
+   The first qualifying icon then wins unless a set-aside one is larger; if
+   none qualifies, the largest set-aside icon is returned. SVGs and JPEGs have
+   no size check.
 4. **`/favicon.ico`** on the requested host is always tried after the links.
 5. **The redirect target's `/favicon.ico`.** When the homepage redirects to
    another host, such as a login or shop page (`tw.battle.net` →

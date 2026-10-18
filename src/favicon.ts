@@ -112,6 +112,12 @@ const ACCEPT_HTML =
 /** Max discovered candidates to attempt before giving up (bounds outbound fan-out). */
 const MAX_CANDIDATES = 5;
 
+/**
+ * Smallest icon returned without trying the remaining candidates: Bitwarden
+ * clients draw icons at 24-36 CSS px, so anything smaller blurs on 2x screens.
+ */
+const MIN_ICON_SIZE = 64;
+
 /** Max <link> icon candidates to collect from a page (bounds memory on hostile HTML). */
 const MAX_DISCOVERED_LINKS = 50;
 
@@ -493,15 +499,15 @@ export async function getIcon(
 	}
 
 	// An icon smaller than its declared size lied about it (e.g. a 32px file
-	// tagged sizes="192x192"): keep the biggest such icon and look for an
-	// honest one, returning whichever is larger.
+	// tagged sizes="192x192"), and one under MIN_ICON_SIZE would blur: keep the
+	// biggest such icon and look for a better one, returning whichever is larger.
 	let best: (IconBytes & { readonly size: number }) | null = null;
 	for (const [url, size] of ordered) {
 		const icon = await fetchIcon(url, lookup);
 		if (!icon) {
 			continue;
 		}
-		if (icon.size === null || icon.size >= size) {
+		if (icon.size === null || icon.size >= Math.max(size, MIN_ICON_SIZE)) {
 			const winner =
 				best !== null && best.size > (icon.size ?? Infinity) ? best : icon;
 			return { ...winner, source: "site" };

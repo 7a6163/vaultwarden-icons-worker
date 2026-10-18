@@ -796,18 +796,18 @@ describe("declared vs real size", () => {
 
 	test("keeps the liar when the honest icon found later is smaller", async () => {
 		mockHome('<link rel="icon" href="/liar.png" sizes="192x192">');
-		reply("/liar.png", png(32, 32), PNG);
-		reply("/favicon.ico", ico([16, 16]), ICO);
+		reply("/liar.png", png(128, 128), PNG);
+		reply("/favicon.ico", ico([64, 64]), ICO);
 
 		const icon = await getIcon(DOMAIN, OPTS);
-		expect(sizeOf(icon)).toBe(32);
+		expect(sizeOf(icon)).toBe(128);
 		expect(icon?.source).toBe("site");
 	});
 
 	test("prefers the honest icon when it is the same size as the liar", async () => {
 		mockHome('<link rel="icon" href="/liar.png" sizes="192x192">');
-		reply("/liar.png", png(32, 32), PNG);
-		reply("/favicon.ico", ico([32, 32]), ICO);
+		reply("/liar.png", png(64, 64), PNG);
+		reply("/favicon.ico", ico([64, 64]), ICO);
 
 		expect((await getIcon(DOMAIN, OPTS))?.contentType).toBe("image/x-icon");
 	});
@@ -868,6 +868,15 @@ describe("declared vs real size", () => {
 		const trace: FetchTrace = { transient: false };
 		expect(sizeOf(await getIcon(DOMAIN, OPTS, trace))).toBe(64);
 		expect(trace.transient).toBe(false);
+	});
+
+	test("keeps looking past an icon under MIN_ICON_SIZE", async () => {
+		// tix.ctbcsports.com: an unsized 16x16 link, a 64x64 /favicon.ico.
+		mockHome('<link rel="icon" href="/small.ico">');
+		reply("/small.ico", ico([16, 16]), ICO);
+		reply("/favicon.ico", png(64, 64), ICO);
+
+		expect(sizeOf(await getIcon(DOMAIN, OPTS))).toBe(64);
 	});
 
 	test("does not treat an undeclared size as a lie", async () => {
