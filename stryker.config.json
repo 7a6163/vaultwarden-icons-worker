@@ -5,7 +5,7 @@
   "testRunner": "command",
   "commandRunner": { "command": "npx vitest run" },
   "coverageAnalysis": "off",
-  "concurrency": 4,
+  "concurrency": 2,
   "mutate": ["src/**/*.ts"],
   "reporters": ["html", "clear-text", "progress"],
   "thresholds": { "high": 100, "low": 95, "break": 95 }
